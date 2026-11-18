@@ -15,3 +15,10 @@ Added React/TypeScript/Vite interface with local in-memory credentials, live API
 - Immutable audit trail, corrections/voids, receipt attachments and backups.
 - Dashboard monthly charts, recent transactions, expiry thresholds, eligible funding recommendations.
 - Reports, Excel export/import, duplicate detection and approved AI integration.
+
+## Testing and allocation recommendation milestone
+- Re-ran the 9 existing backend financial rule tests: 9 passed. Ran 6 frontend API and money utility tests using Node with mocked fetch: 6 passed. TypeScript compilation of the API utility module passed.
+- Added 4 funding suggestion unit tests: 4 passed; total observed unit test results: 19 passed, 0 failed. Verified local tested suggestion source/test Git blob hashes match repository files (176f564a83327e1f0cf233a4ccc0d6ffa18d0ca4 and 702b8e0297a1f69d703595ba51a920e2852200ce).
+- Added GitHub Actions workflow for full frontend build, frontend tests and PostgreSQL API integration tests using disposable test credentials. CI results not yet available via connector; integration tests authored but not executed locally. Direct Git clone/network dependencies and PostgreSQL/Docker were unavailable in execution environment. Browser rendering not verified.
+- Added read-only POST /allocation-suggestions and purchase form integration. Supports a selected program, payment type, supplier, date, amount, academic year and optional preferred funding source. Proposed priority: preferred source, then earliest expiry, then stable budget ID. Only eligible existing budget allocations considered; shows shortfall if insufficient. Staff must review and explicitly save. Manual multi-program and mixed cash/credit allocations remain supported through existing purchase form. This is deterministic assistance, not AI. Priority policy and actual grant rules require stakeholder confirmation.
+- Next: verify CI and resolve failures, implement comprehensive audit/corrections and secure staff sessions, add budget adjustments, expand dashboard analytics and reporting, then Excel and approved AI features. Not production-ready.
