@@ -26,3 +26,24 @@ CREATE TABLE IF NOT EXISTS allocation (
  purchase_id bigint REFERENCES purchase(id), budget_id bigint REFERENCES budget(id),
  cents bigint NOT NULL CHECK(cents > 0), PRIMARY KEY(purchase_id,budget_id)
 );
+
+-- Additive migration for existing development databases.
+CREATE TABLE IF NOT EXISTS purchase_void (
+ purchase_id bigint PRIMARY KEY REFERENCES purchase(id),
+ reason text NOT NULL CHECK(length(trim(reason)) > 0),
+ actor text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS audit_event (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ actor text NOT NULL,
+ action text NOT NULL,
+ entity text NOT NULL,
+ entity_id bigint NOT NULL,
+ details jsonb NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS audit_event_entity_idx ON audit_event(entity,entity_id);
+CREATE OR REPLACE VIEW active_allocation AS
+ SELECT a.* FROM allocation a LEFT JOIN purchase_void v ON v.purchase_id=a.purchase_id
+ WHERE v.purchase_id IS NULL;
