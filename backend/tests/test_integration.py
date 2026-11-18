@@ -11,7 +11,7 @@ def client():
     assert os.environ["PGDATABASE"] == "asufc_test"
     with TestClient(app) as client:
         with db() as conn:
-            conn.execute("TRUNCATE allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
         client.auth=(os.environ["STAFF_USER"],os.environ["STAFF_PASSWORD"])
         yield client
 
@@ -40,3 +40,20 @@ def test_financial_workflow(client):
     assert client.post("/transactions",json=payload).status_code==422
     assert len(client.get("/transactions").json())==1
     assert client.get("/funding",auth=("wrong","wrong")).status_code==401
+
+def test_void_and_adjustment(client):
+    f=create(client,"/funding",dict(name="Test",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    tx=create(client,"/transactions",dict(purchase_date=date.today().isoformat(),supplier="Test",purchase_type="Groceries",cents=25000,allocations=[dict(budget_id=b["id"],cents=25000)]))
+    assert client.patch(f"/budgets/{b['id']}",json=dict(cents=20000,reason="Reduce")).status_code==422
+    assert client.post(f"/transactions/{tx['id']}/void",json=dict(reason="Duplicate entry")).status_code==200
+    assert client.post(f"/transactions/{tx['id']}/void",json=dict(reason="Again")).status_code==409
+    history=client.get("/transactions").json()
+    assert len(history)==1 and history[0]["status"]=="voided"
+    assert history[0]["allocations"][0]["cents"]==25000
+    assert client.get("/dashboard").json()["funding"][0]["spent"]==0
+    assert client.get("/funding").json()[0]["remaining_cents"]==100000
+    assert client.patch(f"/budgets/{b['id']}",json=dict(cents=20000,reason="Reduce")).status_code==200
+    assert client.patch(f"/budgets/{b['id']}",json=dict(cents=110000,reason="Excess")).status_code==422
+    actions={e["action"] for e in client.get("/audit").json()}
+    assert {"created","voided","adjusted"} <= actions
