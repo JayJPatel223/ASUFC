@@ -1,7 +1,7 @@
 export type Program={code:string;name:string};
 export type Funding={id:number;name:string;academic_year:string;kind:'cash'|'credit';expected_cents:number;received_cents:number;remaining_cents:number;unallocated_cents:number;expiry:string|null;eligible_program:string|null;eligible_supplier:string|null};
 export type Budget={id:number;funding_id:number;funding_name:string;program_code:string;academic_year:string;kind:string;cents:number;remaining:number;expiry:string|null};
-export type Transaction={id:number;purchase_date:string;supplier:string;purchase_type:string;description:string;cents:number;allocations:{budget_id:number;program:string;funding:string;kind:string;academic_year:string;cents:number}[]};
+export type Transaction={status:'confirmed'|'voided';void_reason:string|null;voided_at:string|null;id:number;purchase_date:string;supplier:string;purchase_type:string;description:string;cents:number;allocations:{budget_id:number;program:string;funding:string;kind:string;academic_year:string;cents:number}[]};
 export type Dashboard={funding:{kind:string;received:number;expected:number;spent:number}[];programs:{program_code:string;allocated:number;spent:number}[]};
 export type Api=<T>(path:string,method?:string,body?:unknown)=>Promise<T>;
 export function makeApi(user:string,password:string):Api {
@@ -21,3 +21,5 @@ export function cents(value:string):number {
  return n;
 }
 export const money=(n:number)=>new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format(n/100);
+
+export type AuditEvent={id:number;actor:string;action:string;entity:string;entity_id:number;details:unknown;created_at:string};
