@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Literal
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+from fastapi.encoders import jsonable_encoder
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
@@ -62,6 +64,10 @@ class Purchase(BaseModel):
     cents: int = Field(gt=0,le=10**12)
     allocations: list[Split] = Field(min_length=1,max_length=100)
 
+def audit(c, action, entity, entity_id, details):
+    c.execute('INSERT INTO audit_event(actor,action,entity,entity_id,details) VALUES (%s,%s,%s,%s,%s)',(os.environ.get('STAFF_USER','staff'),action,entity,entity_id,Jsonb(jsonable_encoder(details))))
+
+
 def bad(message):
     raise HTTPException(422, message)
 
@@ -75,8 +81,10 @@ def add_funding(f: Funding):
     if f.received_cents > f.expected_cents: bad("Received exceeds award")
     with db() as c:
         if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
-        return c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier)
+        created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier)
          VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s) RETURNING *""",f.model_dump()).fetchone()
+        audit(c,"created","funding",created["id"],created)
+        return created
 
 @app.patch("/funding/{funding_id}/received")
 def confirm_funding(funding_id: int, r: Receipt):
@@ -84,12 +92,14 @@ def confirm_funding(funding_id: int, r: Receipt):
         f=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
         if not f: bad("Unknown funding")
         if not f["received_cents"] <= r.received_cents <= f["expected_cents"]: bad("Receipt must increase confirmed funding within award")
-        return c.execute("UPDATE funding SET received_cents=%s WHERE id=%s RETURNING *",(r.received_cents,funding_id)).fetchone()
+        updated=c.execute("UPDATE funding SET received_cents=%s WHERE id=%s RETURNING *",(r.received_cents,funding_id)).fetchone()
+        audit(c,"receipt_confirmed","funding",funding_id,{"before":f["received_cents"],"after":updated["received_cents"]})
+        return updated
 
 @app.get("/funding")
 def funding():
     with db() as c:
-        return c.execute("""SELECT f.*, received_cents-COALESCE((SELECT sum(a.cents) FROM allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
+        return c.execute("""SELECT f.*, received_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
         received_cents-COALESCE((SELECT sum(b.cents) FROM budget b WHERE b.funding_id=f.id),0) AS unallocated_cents FROM funding f ORDER BY id""").fetchall()
 
 @app.post("/budgets",status_code=201)
@@ -103,11 +113,13 @@ def add_budget(b: Budget):
         used=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(b.funding_id,)).fetchone()["n"]
         if used+b.cents>f["received_cents"]: bad("Insufficient unallocated confirmed funding")
         if c.execute("SELECT 1 FROM budget WHERE funding_id=%s AND program_code=%s",(b.funding_id,b.program_code)).fetchone(): bad("Budget already exists")
-        return c.execute("INSERT INTO budget(funding_id,program_code,cents) VALUES (%(funding_id)s,%(program_code)s,%(cents)s) RETURNING *",b.model_dump()).fetchone()
+        created=c.execute("INSERT INTO budget(funding_id,program_code,cents) VALUES (%(funding_id)s,%(program_code)s,%(cents)s) RETURNING *",b.model_dump()).fetchone()
+        audit(c,"created","budget",created["id"],created)
+        return created
 
 BUDGET_QUERY="""SELECT b.*, f.name AS funding_name,f.kind,f.academic_year,f.expiry,f.eligible_program,f.eligible_supplier,
- b.cents-COALESCE((SELECT sum(a.cents) FROM allocation a WHERE a.budget_id=b.id),0) AS remaining,
- f.received_cents-COALESCE((SELECT sum(a.cents) FROM allocation a JOIN budget bb ON bb.id=a.budget_id WHERE bb.funding_id=f.id),0) AS fund_remaining
+ b.cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0) AS remaining,
+ f.received_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget bb ON bb.id=a.budget_id WHERE bb.funding_id=f.id),0) AS fund_remaining
  FROM budget b JOIN funding f ON f.id=b.funding_id"""
 
 @app.get("/budgets")
@@ -129,22 +141,23 @@ def record(p: Purchase):
         tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s) RETURNING *",p.model_dump()).fetchone()
         for a in p.allocations:
             c.execute("INSERT INTO allocation VALUES (%s,%s,%s)",(tx["id"],a.budget_id,a.cents))
+        audit(c,"created","purchase",tx["id"],p.model_dump())
         return tx
 
 @app.get("/transactions")
 def transactions():
     with db() as c:
-        return c.execute("""SELECT p.*, (SELECT json_agg(json_build_object('budget_id',a.budget_id,'program',b.program_code,'funding',f.name,'kind',f.kind,'academic_year',f.academic_year,'cents',a.cents) ORDER BY a.budget_id)
-        FROM allocation a JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE a.purchase_id=p.id) AS allocations FROM purchase p ORDER BY p.purchase_date DESC,p.id DESC""").fetchall()
+        return c.execute("""SELECT p.*, CASE WHEN v.purchase_id IS NULL THEN 'confirmed' ELSE 'voided' END AS status, v.reason AS void_reason, v.created_at AS voided_at, (SELECT json_agg(json_build_object('budget_id',a.budget_id,'program',b.program_code,'funding',f.name,'kind',f.kind,'academic_year',f.academic_year,'cents',a.cents) ORDER BY a.budget_id)
+        FROM allocation a JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE a.purchase_id=p.id) AS allocations FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id ORDER BY p.purchase_date DESC,p.id DESC""").fetchall()
 
 @app.get("/dashboard")
 def dashboard(year: str = "2026-2027"):
     with db() as c:
         return {"funding":c.execute("""SELECT kind, sum(received_cents) AS received, sum(expected_cents-received_cents) AS expected,
-        sum(COALESCE((SELECT sum(a.cents) FROM allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0)) AS spent
+        sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0)) AS spent
         FROM funding f WHERE academic_year=%s GROUP BY kind""",(year,)).fetchall(),
         "programs":c.execute("""SELECT b.program_code, sum(b.cents) AS allocated,
-        sum(COALESCE((SELECT sum(a.cents) FROM allocation a WHERE a.budget_id=b.id),0)) AS spent FROM budget b JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s GROUP BY b.program_code""",(year,)).fetchall()}
+        sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0)) AS spent FROM budget b JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s GROUP BY b.program_code""",(year,)).fetchall()}
 
 
 class SuggestionRequest(BaseModel):
@@ -164,3 +177,44 @@ def allocate_suggestion(p: SuggestionRequest):
             return suggest_allocations(rows,p.cents,p.program_code,p.academic_year,p.kind,p.supplier,p.purchase_date,p.preferred_funding)
         except ValueError as e:
             bad(str(e))
+
+class ChangeReason(BaseModel):
+    reason: str = Field(min_length=1,max_length=1000)
+
+class BudgetChange(ChangeReason):
+    cents: int = Field(gt=0,le=10**12)
+
+@app.post("/transactions/{purchase_id}/void")
+def void_purchase(purchase_id: int, change: ChangeReason):
+    if not change.reason.strip(): bad("Reason required")
+    with db() as c:
+        p=c.execute("SELECT * FROM purchase WHERE id=%s FOR UPDATE",(purchase_id,)).fetchone()
+        if not p: raise HTTPException(404,"Unknown purchase")
+        c.execute("SELECT id FROM funding WHERE id IN (SELECT b.funding_id FROM budget b JOIN allocation a ON a.budget_id=b.id WHERE a.purchase_id=%s) ORDER BY id FOR UPDATE",(purchase_id,)).fetchall()
+        if c.execute("SELECT 1 FROM purchase_void WHERE purchase_id=%s",(purchase_id,)).fetchone():
+            raise HTTPException(409,"Purchase already voided")
+        result=c.execute("INSERT INTO purchase_void(purchase_id,reason,actor) VALUES (%s,%s,%s) RETURNING *",(purchase_id,change.reason.strip(),os.environ.get("STAFF_USER","staff"))).fetchone()
+        audit(c,"voided","purchase",purchase_id,{"reason":change.reason.strip(),"original_cents":p["cents"]})
+        return result
+
+@app.patch("/budgets/{budget_id}")
+def adjust_budget(budget_id: int, change: BudgetChange):
+    if not change.reason.strip(): bad("Reason required")
+    with db() as c:
+        b=c.execute("SELECT * FROM budget WHERE id=%s",(budget_id,)).fetchone()
+        if not b: raise HTTPException(404,"Unknown budget")
+        f=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(b["funding_id"],)).fetchone()
+        b=c.execute("SELECT * FROM budget WHERE id=%s FOR UPDATE",(budget_id,)).fetchone()
+        spent=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM active_allocation WHERE budget_id=%s",(budget_id,)).fetchone()["n"]
+        other=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s AND id<>%s",(f["id"],budget_id)).fetchone()["n"]
+        if change.cents < spent: bad("Budget cannot be less than confirmed spending")
+        if change.cents+other > f["received_cents"]: bad("Insufficient confirmed funding")
+        if change.cents>b["cents"] and f["expiry"] and f["expiry"]<date.today(): bad("Funding expired")
+        result=c.execute("UPDATE budget SET cents=%s WHERE id=%s RETURNING *",(change.cents,budget_id)).fetchone()
+        audit(c,"adjusted","budget",budget_id,{"before":b["cents"],"after":change.cents,"reason":change.reason.strip()})
+        return result
+
+@app.get("/audit")
+def audit_history():
+    with db() as c:
+        return c.execute("SELECT * FROM audit_event ORDER BY id DESC LIMIT 500").fetchall()
