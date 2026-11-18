@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "tsc --strict --target ES2022 --module commonjs --lib ES2022,DOM --skipLibCheck --outDir .test-build src/api.ts && node -e \"require('node:fs').renameSync('.test-build/api.js','.test-build/api.cjs')\" && node --test tests/*.test.cjs"
   },
   "dependencies": {
     "react": "^18.3.1",
