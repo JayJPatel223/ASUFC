@@ -19,3 +19,11 @@ def test_invalid(row):
 def test_shared_fund():
     with pytest.raises(ValueError):
         check([split(cents=10000,fund_remaining=20000),split(budget_id=2,cents=15000,fund_remaining=20000)])
+
+def test_duplicate_budget_rejected():
+    with pytest.raises(ValueError, match="Duplicate budget"):
+        check([split(cents=10000),split(cents=15000)])
+
+def test_cross_year_rejected():
+    with pytest.raises(ValueError, match="academic years"):
+        check([split(cents=10000),split(budget_id=2,cents=15000,academic_year="2027-2028")])
