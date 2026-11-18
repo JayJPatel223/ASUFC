@@ -10,6 +10,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from .rules import validate_purchase
+from .suggestions import suggest_allocations
 
 def db():
     return psycopg.connect(row_factory=dict_row)
@@ -144,3 +145,22 @@ def dashboard(year: str = "2026-2027"):
         FROM funding f WHERE academic_year=%s GROUP BY kind""",(year,)).fetchall(),
         "programs":c.execute("""SELECT b.program_code, sum(b.cents) AS allocated,
         sum(COALESCE((SELECT sum(a.cents) FROM allocation a WHERE a.budget_id=b.id),0)) AS spent FROM budget b JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s GROUP BY b.program_code""",(year,)).fetchall()}
+
+
+class SuggestionRequest(BaseModel):
+    program_code: str
+    academic_year: str = Field(pattern=r"^\d{4}-\d{4}$")
+    kind: Literal["cash","credit"]
+    supplier: str = Field(min_length=1,max_length=200)
+    purchase_date: date
+    cents: int = Field(gt=0,le=10**12)
+    preferred_funding: int | None = None
+
+@app.post("/allocation-suggestions")
+def allocate_suggestion(p: SuggestionRequest):
+    with db() as c:
+        rows=c.execute(BUDGET_QUERY+" WHERE b.program_code=%s AND f.academic_year=%s",(p.program_code,p.academic_year)).fetchall()
+        try:
+            return suggest_allocations(rows,p.cents,p.program_code,p.academic_year,p.kind,p.supplier,p.purchase_date,p.preferred_funding)
+        except ValueError as e:
+            bad(str(e))
