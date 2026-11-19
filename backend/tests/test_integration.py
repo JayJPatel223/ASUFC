@@ -220,3 +220,11 @@ def test_purchase_type_restriction(client):
     assert client.post("/transactions",json=payload).status_code==422
     create(client,"/transactions",payload|{"purchase_type":"Groceries"})
     assert client.patch(f"/funding/{f['id']}/purchase-type",json=dict(purchase_type="Equipment",reason="Invalid change")).status_code==422
+
+def test_restriction_suggestions(client):
+    f=create(client,"/funding",dict(name="Restricted suggestions",academic_year="2026-2027",kind="cash",expected_cents=10000,received_cents=10000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=10000))
+    assert client.patch(f"/funding/{f['id']}/purchase-type",json=dict(purchase_type="Groceries",reason="Terms")).status_code==200
+    p=dict(program_code="ASUFCGR",academic_year="2026-2027",kind="cash",supplier="Shop",purchase_date="2026-11-01",cents=1000,purchase_type="Equipment")
+    assert client.post("/allocation-suggestions",json=p).json()["unallocated_cents"]==1000
+    assert client.post("/allocation-suggestions",json=p|{"purchase_type":"Groceries"}).json()["allocations"]==[{"budget_id":b["id"],"cents":1000}]
