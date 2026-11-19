@@ -32,3 +32,5 @@ export async function downloadReport(api:Api,path:string) {
 }
 
 export type FundingReceipt={id:number;funding_id:number;cents:number;received_on:string|null;recorded_at:string;actor:string};
+
+export type AcademicPeriod={id:number;academic_year:string;starts_on:string;ends_on:string;semesters:{id:number;name:string;starts_on:string;ends_on:string}[]};
