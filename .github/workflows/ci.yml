@@ -126,4 +126,16 @@ jobs:
           test "$(docker exec "$cid" psql -U asufc -d asufc_restore_test -Atc 'SELECT capacity_cents FROM funding_capacity WHERE id=1')" = 10000
           test "$(docker exec "$cid" psql -U asufc -d asufc_restore_test -Atc 'SELECT sum(cents) FROM active_allocation')" = 2500
           test "$(docker exec "$cid" psql -U asufc -d asufc_restore_test -Atc 'SELECT count(*) FROM staff_session')" = 0
-          rm -f /tmp/test.dump
+          sudo apt-get update -qq
+          sudo apt-get install -y age
+          umask 077
+          age-keygen -o /tmp/asufc-ci.agekey
+          recipient=$(age-keygen -y /tmp/asufc-ci.agekey)
+          age -r "$recipient" -o /tmp/test.dump.age /tmp/test.dump
+          age -d -i /tmp/asufc-ci.agekey /tmp/test.dump.age | cmp - /tmp/test.dump
+          docker exec "$cid" createdb -U asufc asufc_encrypted_restore_test
+          age -d -i /tmp/asufc-ci.agekey /tmp/test.dump.age | docker exec -i "$cid" pg_restore -U asufc -d asufc_encrypted_restore_test --no-owner --no-acl --exit-on-error
+          test "$(docker exec "$cid" psql -U asufc -d asufc_encrypted_restore_test -Atc 'SELECT sum(cents) FROM active_allocation')" = 2500
+          test "$(docker exec "$cid" psql -U asufc -d asufc_encrypted_restore_test -Atc 'SELECT count(*) FROM staff_session')" = 0
+          bash -n scripts/backup-encrypted.sh scripts/restore-encrypted-check.sh
+          rm -f /tmp/test.dump /tmp/test.dump.age /tmp/asufc-ci.agekey

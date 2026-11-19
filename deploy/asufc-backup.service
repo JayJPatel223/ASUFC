@@ -1,0 +1,14 @@
+[Unit]
+Description=ASUFC encrypted database backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# Replace paths and account with approved host-specific values before installation.
+User=asufc-operator
+WorkingDirectory=/opt/asufc
+EnvironmentFile=/etc/asufc/backup.env
+ExecStart=/bin/bash /opt/asufc/scripts/backup-encrypted.sh /var/lib/asufc-backups
+UMask=0077
+NoNewPrivileges=true

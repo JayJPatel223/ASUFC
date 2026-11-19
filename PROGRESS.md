@@ -87,3 +87,6 @@ Added HTTPS deployment candidate (Caddy, same-origin API, isolated backend, secu
 
 ## Backup and recovery
 Added restrictive-permission PostgreSQL custom-format backup and non-destructive disposable restore check, checksum, excluded active sessions, recovery runbook and CI restore test with fictional records. Production retention, encrypted storage, automated schedule and real recovery drill require approval. CI pending.
+
+## Infrastructure limitations follow-up
+Previous backup/restore CI passed. Added streaming age encryption and encrypted restore drill, inactive systemd daily schedule template, recovery regression and HTTPS Secure-cookie API test. CI pending. Real host, trust/keys, retention, offsite storage, schedule activation and public TLS remain unapproved; no production changes made.

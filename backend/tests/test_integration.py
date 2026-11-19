@@ -271,3 +271,27 @@ def test_password_rotation_revokes_sessions(client):
         assert other.get("/funding").status_code==401
         assert other.post("/auth/login",json={"username":user,"password":old}).status_code==401
         assert other.post("/auth/login",json={"username":user,"password":new}).status_code==200
+
+def test_operator_password_recovery(client):
+    from app.reset_password import reset_password
+    from app.main import db
+    user=os.environ["STAFF_USER"]
+    old=os.environ["STAFF_PASSWORD"]
+    new="operator-reset-test-password"
+    reset_password(new)
+    assert client.get("/funding").status_code==401
+    assert client.post("/auth/login",json={"username":user,"password":old}).status_code==401
+    assert client.post("/auth/login",json={"username":user,"password":new}).status_code==200
+    assert any(x["action"]=="password_reset" for x in client.get("/audit").json())
+
+def test_secure_cookie_over_https(client,monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    monkeypatch.setenv("SESSION_SECURE","1")
+    with TestClient(app,base_url="https://testserver") as tls:
+        r=tls.post("/auth/login",headers={"X-ASUFC-Request":"1"},json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]})
+        assert r.status_code==200
+        assert "Secure" in r.headers["set-cookie"]
+        assert "HttpOnly" in r.headers["set-cookie"]
+        assert tls.get("/funding").status_code==200
+        assert tls.get("http://testserver/funding").status_code==401

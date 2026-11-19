@@ -4,9 +4,7 @@ import os
 from .main import db,audit
 from .credentials import hash_password,validate_password
 
-def main():
-    password=getpass.getpass("New staff password: ")
-    if password!=getpass.getpass("Repeat password: "): raise SystemExit("Passwords differ")
+def reset_password(password):
     validate_password(password)
     user=os.environ.get("STAFF_USER","staff")
     with db() as c:
@@ -16,5 +14,10 @@ def main():
         c.execute("DELETE FROM staff_session")
         c.execute("DELETE FROM staff_login_attempt")
         audit(c,"password_reset","staff_account",0,{"method":"operator"})
+
+def main():
+    password=getpass.getpass("New staff password: ")
+    if password!=getpass.getpass("Repeat password: "): raise SystemExit("Passwords differ")
+    reset_password(password)
     print("Password reset. All staff sessions revoked.")
 if __name__=="__main__": main()
