@@ -1,0 +1,21 @@
+import {test,expect} from '@playwright/test';
+test('staff login, cookie isolation, protected requests and logout',async({page,context,request})=>{
+ await page.goto('/');
+ await expect(page.getByRole('button',{name:'Sign in'})).toBeVisible();
+ expect((await request.get('/api/funding')).status()).toBe(401);
+ await page.getByLabel('Username').fill(process.env.STAFF_USER!);
+ await page.getByLabel('Password',{exact:true}).fill(process.env.STAFF_PASSWORD!);
+ await page.getByRole('button',{name:'Sign in'}).click();
+ await expect(page.getByRole('heading',{name:'Overview',exact:true})).toBeVisible();
+ const cookie=(await context.cookies()).find(c=>c.name==='asufc_session');
+ expect(cookie?.httpOnly).toBe(true);
+ expect(cookie?.sameSite).toBe('Strict');
+ expect(await page.evaluate(()=>document.cookie)).not.toContain('asufc_session');
+ const blocked=await page.evaluate(async()=> (await fetch('/api/auth/logout',{method:'POST'})).status);
+ expect(blocked).toBe(403);
+ await page.reload();
+ await expect(page.getByRole('heading',{name:'Overview',exact:true})).toBeVisible();
+ await page.getByRole('button',{name:'Sign out'}).click();
+ await expect(page.getByRole('button',{name:'Sign in'})).toBeVisible();
+ expect((await context.request.get('/api/funding')).status()).toBe(401);
+});

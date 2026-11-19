@@ -17,3 +17,8 @@ See docs/architecture.md and PROGRESS.md for limitations. No production readines
 
 ## Staff credentials
 STAFF_PASSWORD is a one-time bootstrap password (minimum 16 characters); subsequent changes are stored as salted scrypt hashes. Change password in Account; all sessions are revoked. Trusted host operator recovery: `docker compose exec api python -m app.reset_password`. Password is entered interactively, never as a shell argument. Keep STAFF_USER stable; changing it is not an account handover procedure.
+
+## HTTPS deployment candidate
+Use Docker Compose 2.24.4+ on an authorized host, configure ASUFC_DOMAIN to its actual DNS hostname, set unique secrets, and run `docker compose -f docker-compose.yml -f docker-compose.production.yml up --build -d`. The Caddy gateway serves the built frontend and same-origin API, obtains certificates when DNS and ports are configured, and enables secure cookies and security headers. Do not expose the local development configuration. Deployment must be validated with the actual domain and institutional approval; this is not a live deployment.
+
+Browser checks: `cd frontend && npx playwright install chromium && npm run test:e2e` with local API running and STAFF_USER/STAFF_PASSWORD exported; use disposable data only.

@@ -49,3 +49,48 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt httpx
       - run: python -m pytest -v
+  browser:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: asufc_test
+          POSTGRES_USER: asufc
+          POSTGRES_PASSWORD: ci-disposable-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asufc -d asufc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGDATABASE: asufc_test
+      PGUSER: asufc
+      PGPASSWORD: ci-disposable-password
+      SESSION_SECURE: '0'
+      STAFF_USER: teststaff
+      STAFF_PASSWORD: ci-test-only-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r backend/requirements.txt
+      - run: cd backend && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/asufc-api.log 2>&1 &
+      - run: |
+          for i in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/funding)" = 401 ]; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/asufc-api.log
+          exit 1
+      - run: npm install
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend

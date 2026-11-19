@@ -82,3 +82,5 @@ Replaced repeated Basic credentials with opaque hashed database sessions, 8-hour
 
 ## Credential lifecycle
 Added salted scrypt credential persistence, authenticated password rotation, all-session revocation, operator-only interactive recovery and account UI. Bootstrap environment password no longer authenticates after rotation. Tests added; CI pending. Single designated account retained; full institutional identity and handover policy not assumed.
+
+Added HTTPS deployment candidate (Caddy, same-origin API, isolated backend, security headers), plus Chromium Playwright security regression and CI browser job. Real domain/TLS issuance and institutional approval remain outstanding. Browser test uses local HTTP and verifies HttpOnly/SameSite, not HTTPS Secure behavior. CI pending.

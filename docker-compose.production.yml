@@ -1,0 +1,22 @@
+services:
+  api:
+    environment:
+      SESSION_SECURE: "1"
+    ports: !reset []
+  gateway:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    environment:
+      ASUFC_DOMAIN: ${ASUFC_DOMAIN:?set authorized DNS hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+volumes:
+  caddy_data:
+  caddy_config:
