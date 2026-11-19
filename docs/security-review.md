@@ -1,0 +1,18 @@
+# Pre-demo security review
+
+Scope: development prototype, fictional records, source inspection and automated CI. This is not an independent penetration test or production certification.
+
+| Area | Controls and remaining risk |
+|---|---|
+| Access | All financial routes require a server-side staff session. Single staff account; institutional identity, MFA and handover need approval. |
+| Credentials | Salted scrypt hashes; rotation and operator recovery revoke sessions. Existing scrypt work factor merits benchmarking before production. Account-wide throttle can deny service to legitimate staff; consider infrastructure-level rate limiting. |
+| Sessions | Random opaque tokens, hashed storage, fixed expiration, HttpOnly/SameSite, Secure in production. Already-authorized in-flight requests may finish after logout. |
+| Request protection | Same-origin API, no permissive CORS, required mutation header. Deployment must not introduce permissive CORS. |
+| Validation | Parameterized SQL; integer-cent financial rules; bounded imports and formula rejection. Validation responses no longer echo request inputs. |
+| Files | ZIP expansion and upload bounds, protected reports, formula-safe exported strings. Malformed-file fuzzing and independent review remain outstanding. |
+| Dependencies | Python audit clean on prior CI; npm identified Vite/esbuild issues. Vite updated to version recommended by audit. Re-audit and regression tests required before accepting fix. Dependency lockfile and image digest pinning remain needed for reproducible builds. |
+| Deployment | Localhost Caddy smoke test passed (test certificate, bypassed trust verification). Real TLS, host configuration, secret provisioning and network rules require approval. Exclude secrets and financial artifacts from Docker build context. |
+| Recovery | Encrypted backup/restore and monitoring tests passed. Actual key custody, retention, offsite storage and alert routing require authorization. |
+| Finance | Database constraints, transaction locks, duplicate review, audit history and reconciliation. Audit log is not tamper-evident against privileged database operators. |
+
+Release gates: all CI jobs green, known vulnerabilities remediated or expressly assessed, stakeholder financial acceptance, production configuration review, independent security assessment and approved data handling. Do not use real records before authorization.

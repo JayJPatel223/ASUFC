@@ -9,6 +9,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from fastapi.encoders import jsonable_encoder
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from hashlib import sha256
 from .credentials import hash_password,verify_password,validate_password
 from pydantic import BaseModel, Field
@@ -46,6 +48,11 @@ def staff(request: Request):
 
 app = FastAPI(title="ASUFC development API", lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 router=APIRouter(dependencies=[Depends(staff)])
+
+@app.exception_handler(RequestValidationError)
+async def safe_validation_error(request: Request, exc: RequestValidationError):
+    # Validation errors must not echo credentials, uploaded data or arbitrary input.
+    return JSONResponse(status_code=422,content={"detail":"Invalid request fields or values"},headers={"Cache-Control":"no-store"})
 
 class Login(BaseModel):
     username: str = Field(max_length=200)

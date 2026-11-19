@@ -2,7 +2,7 @@
 Development prototype. Use fictional data only; never upload real records or secrets.
 
 ## Local setup
-1. Install Docker Compose and Node.js 20 or newer.
+1. Install Docker Compose and Node.js 22.12+ (or a supported Node 20.19+ release).
 2. Copy .env.example to .env and replace both passwords with random values.
 3. Run `docker compose up --build` from the repository root.
 4. In another terminal run `cd frontend`, `npm install`, then `npm run dev`.

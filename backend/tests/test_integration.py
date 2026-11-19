@@ -295,3 +295,10 @@ def test_secure_cookie_over_https(client,monkeypatch):
         assert "HttpOnly" in r.headers["set-cookie"]
         assert tls.get("/funding").status_code==200
         assert tls.get("http://testserver/funding").status_code==401
+
+def test_validation_does_not_echo_password(client):
+    secret="fictional-secret-"+"x"*1100
+    r=client.post("/auth/login",json={"username":"teststaff","password":secret})
+    assert r.status_code==422
+    assert "fictional-secret-" not in r.text
+    assert r.headers["cache-control"]=="no-store"
