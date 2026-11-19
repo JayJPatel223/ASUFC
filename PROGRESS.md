@@ -76,3 +76,6 @@ Added split-row Excel import (repeated external ID with identical metadata and d
 Added enforceable purchase-type restrictions to purchases, corrections, imports and allocation recommendations; carry-forward inherits restrictions, and editing is audited and blocked for conflicting historical spending or active transfers. CI pending.
 
 Connected purchase-type restriction display and suggestion requests, with additional API regression. Actual stakeholder terms and production/browser acceptance remain pending.
+
+## Staff session authentication
+Replaced repeated Basic credentials with opaque hashed database sessions, 8-hour expiration, HttpOnly SameSite Strict cookies, HTTPS Secure by default outside local Compose, custom mutation header, login throttle and server logout. All financial endpoints use protected router; no public registration or API docs. Existing single staff environment credentials remain bootstrap mechanism, not full account lifecycle. Added session/expiry/throttle regression tests and updated frontend utilities. CI pending. Production TLS, credential rotation, recovery, browser security tests still required.

@@ -11,8 +11,9 @@ def client():
     assert os.environ["PGDATABASE"] == "asufc_test"
     with TestClient(app) as client:
         with db() as conn:
-            conn.execute("TRUNCATE funding_transfer,semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
-        client.auth=(os.environ["STAFF_USER"],os.environ["STAFF_PASSWORD"])
+            conn.execute("TRUNCATE staff_session,staff_login_attempt,funding_transfer,semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
+        client.headers["X-ASUFC-Request"]="1"
+        assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]}).status_code==200
         yield client
 
 def create(client,path,data):
@@ -39,7 +40,10 @@ def test_financial_workflow(client):
     payload["allocations"][0]["cents"]=1
     assert client.post("/transactions",json=payload).status_code==422
     assert len(client.get("/transactions").json())==1
-    assert client.get("/funding",auth=("wrong","wrong")).status_code==401
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app) as anonymous:
+        assert anonymous.get("/funding").status_code==401
 
 def test_void_and_adjustment(client):
     f=create(client,"/funding",dict(name="Test",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
@@ -228,3 +232,25 @@ def test_restriction_suggestions(client):
     p=dict(program_code="ASUFCGR",academic_year="2026-2027",kind="cash",supplier="Shop",purchase_date="2026-11-01",cents=1000,purchase_type="Equipment")
     assert client.post("/allocation-suggestions",json=p).json()["unallocated_cents"]==1000
     assert client.post("/allocation-suggestions",json=p|{"purchase_type":"Groceries"}).json()["allocations"]==[{"budget_id":b["id"],"cents":1000}]
+
+def test_session_security(client):
+    from app.main import db, COOKIE
+    assert client.get("/auth/session").status_code==200
+    token=client.cookies.get(COOKIE)
+    assert token
+    with db() as c:
+        assert not c.execute("SELECT 1 FROM staff_session WHERE token_hash=%s",(token,)).fetchone()
+    client.headers.pop("X-ASUFC-Request")
+    assert client.post("/auth/logout").status_code==403
+    client.headers["X-ASUFC-Request"]="1"
+    assert client.post("/auth/logout").status_code==200
+    client.cookies.set(COOKIE,token)
+    assert client.get("/funding").status_code==401
+
+def test_login_throttle_and_expiry(client):
+    from app.main import db
+    with db() as c: c.execute("UPDATE staff_session SET expires_at=now()-interval '1 second'")
+    assert client.get("/funding").status_code==401
+    for _ in range(10):
+        assert client.post("/auth/login",json={"username":"wrong","password":"wrong"}).status_code==401
+    assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]}).status_code==429

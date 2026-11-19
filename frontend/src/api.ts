@@ -4,12 +4,10 @@ export type Budget={id:number;funding_id:number;funding_name:string;program_code
 export type Transaction={original_id:number|null;replacement_id:number|null;status:'confirmed'|'voided';void_reason:string|null;voided_at:string|null;id:number;purchase_date:string;supplier:string;purchase_type:string;description:string;cents:number;allocations:{budget_id:number;program:string;funding:string;kind:string;academic_year:string;cents:number}[]};
 export type Dashboard={funding:{kind:string;received:number;expected:number;spent:number;carried_in:number;carried_out:number;capacity:number}[];programs:{program_code:string;allocated:number;spent:number}[]};
 export type Api=<T>(path:string,method?:string,body?:unknown,format?:'blob')=>Promise<T>;
-export function makeApi(user:string,password:string):Api {
- const bytes=new TextEncoder().encode(user+':'+password);
- const credential=btoa(Array.from(bytes,b=>String.fromCharCode(b)).join(''));
+export function makeApi():Api {
  return async <T>(path:string,method='GET',body?:unknown,format?:'blob'):Promise<T>=>{
-  const response=await fetch('/api'+path,{method,headers:{Authorization:'Basic '+credential,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});
-  if(!response.ok){const error=await response.json().catch(()=>null);throw new Error(typeof error?.detail==='string'?error.detail:response.status===401?'Invalid staff credentials':'Request failed ('+response.status+')');}
+  const response=await fetch('/api'+path,{method,headers:{'X-ASUFC-Request':'1','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store',credentials:'same-origin'});
+  if(!response.ok){const error=await response.json().catch(()=>null);throw new Error(typeof error?.detail==='string'?error.detail:response.status===401?'Staff session expired or invalid credentials':'Request failed ('+response.status+')');}
   return (format==='blob'?response.blob():response.json()) as Promise<T>;
  };
 }

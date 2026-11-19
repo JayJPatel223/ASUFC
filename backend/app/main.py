@@ -8,8 +8,8 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from fastapi.encoders import jsonable_encoder
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response
+from hashlib import sha256
 from pydantic import BaseModel, Field
 from .rules import validate_purchase
 from .suggestions import suggest_allocations
@@ -25,14 +25,68 @@ async def lifespan(app):
         conn.execute(Path(__file__).with_name("schema.sql").read_text())
     yield
 
-security = HTTPBasic()
-def staff(c: HTTPBasicCredentials = Depends(security)):
-    user_ok = secrets.compare_digest(c.username.encode(), os.environ.get("STAFF_USER","staff").encode())
-    pass_ok = secrets.compare_digest(c.password.encode(), os.environ["STAFF_PASSWORD"].encode())
-    if not (user_ok and pass_ok):
-        raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate":"Basic"})
+COOKIE="asufc_session"
+def token_hash(token):
+    return sha256(token.encode()).hexdigest()
 
-app = FastAPI(title="ASUFC development API", lifespan=lifespan, dependencies=[Depends(staff)])
+def staff(request: Request):
+    token=request.cookies.get(COOKIE,"")
+    if not token or len(token)>128: raise HTTPException(401,"Staff session required")
+    if request.method not in ("GET","HEAD","OPTIONS") and request.headers.get("X-ASUFC-Request")!="1":
+        raise HTTPException(403,"Missing request protection header")
+    with db() as c:
+        row=c.execute("SELECT username FROM staff_session WHERE token_hash=%s AND expires_at>now()",(token_hash(token),)).fetchone()
+    if not row or row["username"]!=os.environ.get("STAFF_USER","staff"): raise HTTPException(401,"Staff session expired")
+    return row["username"]
+
+app = FastAPI(title="ASUFC development API", lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
+router=APIRouter(dependencies=[Depends(staff)])
+
+class Login(BaseModel):
+    username: str = Field(max_length=200)
+    password: str = Field(max_length=1024)
+
+@app.post("/auth/login")
+def login(p: Login,request: Request,response: Response):
+    if request.headers.get("X-ASUFC-Request")!="1": raise HTTPException(403,"Missing request protection header")
+    user=os.environ.get("STAFF_USER","staff")
+    # Global account throttle suits a single designated staff account.
+    with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663002)")
+        c.execute("DELETE FROM staff_login_attempt WHERE attempted_at<now()-interval '15 minutes'")
+        attempts=c.execute("SELECT count(*) AS n FROM staff_login_attempt").fetchone()["n"]
+        if attempts>=10: raise HTTPException(429,"Too many attempts; try again in 15 minutes")
+        valid=secrets.compare_digest(p.username.encode(),user.encode()) & secrets.compare_digest(p.password.encode(),os.environ["STAFF_PASSWORD"].encode())
+        if not valid:
+            c.execute("INSERT INTO staff_login_attempt DEFAULT VALUES")
+        else:
+            c.execute("DELETE FROM staff_login_attempt")
+            c.execute("DELETE FROM staff_session WHERE expires_at<=now()")
+            previous=request.cookies.get(COOKIE,"")
+            if previous and len(previous)<=128: c.execute("DELETE FROM staff_session WHERE token_hash=%s",(token_hash(previous),))
+            token=secrets.token_urlsafe(32)
+            c.execute("INSERT INTO staff_session(token_hash,username,expires_at) VALUES (%s,%s,now()+interval '8 hours')",(token_hash(token),user))
+    if not valid: raise HTTPException(401,"Invalid staff credentials")
+    response.set_cookie(COOKIE,token,max_age=28800,httponly=True,secure=os.getenv("SESSION_SECURE","1")!="0",samesite="strict",path="/")
+    response.headers["Cache-Control"]="no-store"
+    return {"username":user}
+
+@router.get("/auth/session")
+def session(username: str = Depends(staff)):
+    return {"username":username}
+
+@router.post("/auth/logout")
+def logout(request: Request,response: Response):
+    with db() as c: c.execute("DELETE FROM staff_session WHERE token_hash=%s",(token_hash(request.cookies[COOKIE]),))
+    response.delete_cookie(COOKIE,path="/",secure=os.getenv("SESSION_SECURE","1")!="0",httponly=True,samesite="strict")
+    return {"ok":True}
+
+@app.middleware("http")
+async def no_cache(request,call_next):
+    response=await call_next(request)
+    response.headers["Cache-Control"]="no-store"
+    response.headers["X-Content-Type-Options"]="nosniff"
+    return response
 
 class Funding(BaseModel):
     name: str = Field(min_length=1,max_length=200)
@@ -85,12 +139,12 @@ def add_receipt(c,funding_id,cents,received_on):
 def bad(message):
     raise HTTPException(422, message)
 
-@app.get("/programs")
+@router.get("/programs")
 def programs():
     with db() as c:
         return c.execute("SELECT * FROM program ORDER BY code").fetchall()
 
-@app.post("/funding", status_code=201)
+@router.post("/funding", status_code=201)
 def add_funding(f: Funding):
     if f.received_cents > f.expected_cents: bad("Received exceeds award")
     with db() as c:
@@ -103,7 +157,7 @@ def add_funding(f: Funding):
         audit(c,"created","funding",created["id"],created)
         return created
 
-@app.patch("/funding/{funding_id}/received")
+@router.patch("/funding/{funding_id}/received")
 def confirm_funding(funding_id: int, r: Receipt):
     with db() as c:
         f=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
@@ -115,13 +169,13 @@ def confirm_funding(funding_id: int, r: Receipt):
         audit(c,"receipt_confirmed","funding",funding_id,{"before":f["received_cents"],"after":updated["received_cents"]})
         return updated
 
-@app.get("/funding")
+@router.get("/funding")
 def funding():
     with db() as c:
         return c.execute("""SELECT f.*, (SELECT purchase_type FROM funding_purchase_type WHERE funding_id=f.id) AS eligible_purchase_type, capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
         capacity_cents-COALESCE((SELECT sum(b.cents) FROM budget b WHERE b.funding_id=f.id),0) AS unallocated_cents FROM funding_capacity f ORDER BY id""").fetchall()
 
-@app.post("/budgets",status_code=201)
+@router.post("/budgets",status_code=201)
 def add_budget(b: Budget):
     with db() as c:
         f=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(b.funding_id,)).fetchone()
@@ -141,12 +195,12 @@ BUDGET_QUERY="""SELECT b.*, f.name AS funding_name,f.kind,f.academic_year,f.expi
  f.capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget bb ON bb.id=a.budget_id WHERE bb.funding_id=f.id),0) AS fund_remaining
  FROM budget b JOIN funding_capacity f ON f.id=b.funding_id"""
 
-@app.get("/budgets")
+@router.get("/budgets")
 def budgets():
     with db() as c:
         return c.execute(BUDGET_QUERY+" ORDER BY b.id").fetchall()
 
-@app.post("/transactions",status_code=201)
+@router.post("/transactions",status_code=201)
 def record(p: Purchase):
     with db() as c:
         c.execute("SELECT pg_advisory_xact_lock(2663001)")
@@ -172,13 +226,13 @@ def save_purchase(c,p):
     audit(c,"created","purchase",tx["id"],p.model_dump())
     return tx
 
-@app.get("/transactions")
+@router.get("/transactions")
 def transactions():
     with db() as c:
         return c.execute("""SELECT p.*, CASE WHEN v.purchase_id IS NULL THEN 'confirmed' ELSE 'voided' END AS status, v.reason AS void_reason, v.created_at AS voided_at, (SELECT replacement_id FROM purchase_correction WHERE original_id=p.id) AS replacement_id, (SELECT original_id FROM purchase_correction WHERE replacement_id=p.id) AS original_id, (SELECT json_agg(json_build_object('budget_id',a.budget_id,'program',b.program_code,'funding',f.name,'kind',f.kind,'academic_year',f.academic_year,'cents',a.cents) ORDER BY a.budget_id)
         FROM allocation a JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE a.purchase_id=p.id) AS allocations FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id ORDER BY p.purchase_date DESC,p.id DESC""").fetchall()
 
-@app.get("/dashboard")
+@router.get("/dashboard")
 def dashboard(year: str = "2026-2027"):
     with db() as c:
         return {"funding":c.execute("""SELECT kind, sum(received_cents) AS received, sum(expected_cents-received_cents) AS expected, sum(carried_in_cents) AS carried_in, sum(carried_out_cents) AS carried_out, sum(capacity_cents) AS capacity,
@@ -198,7 +252,7 @@ class SuggestionRequest(BaseModel):
     preferred_funding: int | None = None
     purchase_type: str = Field(default="",max_length=100)
 
-@app.post("/allocation-suggestions")
+@router.post("/allocation-suggestions")
 def allocate_suggestion(p: SuggestionRequest):
     with db() as c:
         rows=c.execute(BUDGET_QUERY+" WHERE b.program_code=%s AND f.academic_year=%s",(p.program_code,p.academic_year)).fetchall()
@@ -213,7 +267,7 @@ class ChangeReason(BaseModel):
 class BudgetChange(ChangeReason):
     cents: int = Field(ge=0,le=10**12)
 
-@app.post("/transactions/{purchase_id}/void")
+@router.post("/transactions/{purchase_id}/void")
 def void_purchase(purchase_id: int, change: ChangeReason):
     if not change.reason.strip(): bad("Reason required")
     with db() as c:
@@ -226,7 +280,7 @@ def void_purchase(purchase_id: int, change: ChangeReason):
         audit(c,"voided","purchase",purchase_id,{"reason":change.reason.strip(),"original_cents":p["cents"]})
         return result
 
-@app.patch("/budgets/{budget_id}")
+@router.patch("/budgets/{budget_id}")
 def adjust_budget(budget_id: int, change: BudgetChange):
     if not change.reason.strip(): bad("Reason required")
     with db() as c:
@@ -243,7 +297,7 @@ def adjust_budget(budget_id: int, change: BudgetChange):
         audit(c,"adjusted","budget",budget_id,{"before":b["cents"],"after":change.cents,"reason":change.reason.strip()})
         return result
 
-@app.get("/audit")
+@router.get("/audit")
 def audit_history():
     with db() as c:
         return c.execute("SELECT * FROM audit_event ORDER BY id DESC LIMIT 500").fetchall()
@@ -264,12 +318,12 @@ def report_rows(year: str = "2026-2027", start: date | None = None, end: date | 
     with db() as c:
         return c.execute(query + " ORDER BY p.purchase_date,p.id,b.id",params).fetchall()
 
-@app.get("/reports/spending")
+@router.get("/reports/spending")
 def spending_report(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
     from .reporting import summarize
     return summarize(report_rows(year,start,end,program,supplier,funding_id,purchase_type))
 
-@app.get("/reports/spending.xlsx")
+@router.get("/reports/spending.xlsx")
 def spending_export(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
     from fastapi.responses import Response
     from .export import spending_workbook
@@ -280,7 +334,7 @@ def spending_export(year: str = "2026-2027", start: date | None = None, end: dat
 class Correction(ChangeReason):
     replacement: Purchase
 
-@app.post("/transactions/{purchase_id}/correct",status_code=201)
+@router.post("/transactions/{purchase_id}/correct",status_code=201)
 def correct_purchase(purchase_id: int, change: Correction):
     if not change.reason.strip(): bad("Reason required")
     with db() as c:
@@ -300,7 +354,7 @@ def correct_purchase(purchase_id: int, change: Correction):
         audit(c,"corrected","purchase",purchase_id,{"replacement_id":replacement["id"],"reason":change.reason.strip()})
         return replacement
 
-@app.get("/funding/{funding_id}/receipts")
+@router.get("/funding/{funding_id}/receipts")
 def receipts(funding_id: int):
     with db() as c:
         if not c.execute("SELECT 1 FROM funding WHERE id=%s",(funding_id,)).fetchone(): raise HTTPException(404,"Unknown funding")
@@ -320,12 +374,12 @@ class SemesterPeriod(BaseModel):
     starts_on: date
     ends_on: date
 
-@app.get("/academic-years")
+@router.get("/academic-years")
 def academic_years():
     with db() as c:
         return c.execute("SELECT p.*, COALESCE((SELECT json_agg(s ORDER BY s.starts_on) FROM semester s WHERE s.period_id=p.id),'[]'::json) AS semesters FROM academic_period p ORDER BY starts_on").fetchall()
 
-@app.post("/academic-years",status_code=201)
+@router.post("/academic-years",status_code=201)
 def create_academic_year(p: AcademicPeriod):
     validate_year_label(p.academic_year)
     if p.starts_on>p.ends_on or p.starts_on.year!=int(p.academic_year[:4]) or p.ends_on.year!=int(p.academic_year[5:]): bad("Dates must be ordered and match academic year")
@@ -338,7 +392,7 @@ def create_academic_year(p: AcademicPeriod):
         audit(c,"created","academic_year",row["id"],row)
         return row
 
-@app.post("/academic-years/{year}/semesters",status_code=201)
+@router.post("/academic-years/{year}/semesters",status_code=201)
 def create_semester(year: str,p: SemesterPeriod):
     with db() as c:
         period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s FOR UPDATE",(year,)).fetchone()
@@ -359,7 +413,7 @@ class CarryTransfer(ChangeReason):
     destination_year: str
     cents: int = Field(gt=0,le=10**12)
 
-@app.patch("/funding/{funding_id}/carry-permission")
+@router.patch("/funding/{funding_id}/carry-permission")
 def carry_permission(funding_id: int,p: CarryPermission):
     if not p.reason.strip(): bad("Reason required")
     with db() as c:
@@ -369,7 +423,7 @@ def carry_permission(funding_id: int,p: CarryPermission):
         audit(c,"carry_permission_changed","funding",funding_id,{"before":old["carry_eligible"],"after":p.eligible,"reason":p.reason.strip()})
         return row
 
-@app.post("/funding/{funding_id}/carry-forward",status_code=201)
+@router.post("/funding/{funding_id}/carry-forward",status_code=201)
 def carry_forward(funding_id: int,p: CarryTransfer):
     if not p.reason.strip(): bad("Reason required")
     validate_year_label(p.destination_year)
@@ -392,12 +446,12 @@ def carry_forward(funding_id: int,p: CarryTransfer):
         audit(c,"carried_forward","funding",funding_id,transfer)
         return transfer
 
-@app.get("/funding-transfers")
+@router.get("/funding-transfers")
 def funding_transfers():
     with db() as c:
         return c.execute("SELECT t.*,s.academic_year AS source_year,d.academic_year AS destination_year,s.name AS funding_name,s.kind,v.transfer_id IS NOT NULL AS reversed,v.reason AS reversal_reason FROM funding_transfer t JOIN funding s ON s.id=t.source_id JOIN funding d ON d.id=t.destination_id LEFT JOIN funding_transfer_void v ON v.transfer_id=t.id ORDER BY t.id DESC").fetchall()
 
-@app.get("/reports/reconciliation")
+@router.get("/reports/reconciliation")
 def reconciliation_report(year: str = "2026-2027"):
     from .reconciliation import reconcile
     validate_year_label(year)
@@ -411,7 +465,7 @@ def reconciliation_report(year: str = "2026-2027"):
         transfers=c.execute("SELECT * FROM active_funding_transfer").fetchall()
         return reconcile(funds,budgets,purchases,allocations,receipts,transfers,year)
 
-@app.get("/reports/reconciliation.xlsx")
+@router.get("/reports/reconciliation.xlsx")
 def reconciliation_export(year: str = "2026-2027"):
     from fastapi.responses import Response
     from .export import reconciliation_workbook
@@ -448,7 +502,7 @@ def import_rows(c,parsed):
         result.append(tx["id"])
     return result
 
-@app.post("/imports/preview")
+@router.post("/imports/preview")
 def preview_import(p: ImportWorkbook):
     parsed=parse_import(p)
     if parsed["errors"] or not parsed["rows"]: return parsed|{"valid":False}
@@ -461,7 +515,7 @@ def preview_import(p: ImportWorkbook):
         return parsed|{"valid":False,"validation_error":e.detail}
     return parsed|{"valid":True}
 
-@app.post("/imports/commit",status_code=201)
+@router.post("/imports/commit",status_code=201)
 def commit_import(p: ImportWorkbook):
     parsed=parse_import(p)
     with db() as c:
@@ -473,7 +527,7 @@ class NewProgram(BaseModel):
     code: str = Field(pattern=r"^[A-Z0-9&_-]{2,40}$")
     name: str = Field(min_length=1,max_length=200)
 
-@app.post("/programs",status_code=201)
+@router.post("/programs",status_code=201)
 def create_program(p: NewProgram):
     if not p.name.strip(): bad("Name required")
     with db() as c:
@@ -481,7 +535,7 @@ def create_program(p: NewProgram):
         if not row: raise HTTPException(409,"Program code already exists")
         return row
 
-@app.post("/funding-transfers/{transfer_id}/reverse")
+@router.post("/funding-transfers/{transfer_id}/reverse")
 def reverse_transfer(transfer_id: int,p: ChangeReason):
     if not p.reason.strip(): bad("Reason required")
     with db() as c:
@@ -503,7 +557,7 @@ class PeriodEdit(ChangeReason):
 class SemesterEdit(PeriodEdit):
     name: str = Field(min_length=1,max_length=100)
 
-@app.patch("/academic-years/{year}")
+@router.patch("/academic-years/{year}")
 def edit_academic_year(year: str,p: PeriodEdit):
     validate_year_label(year)
     if not p.reason.strip() or p.starts_on>p.ends_on or p.starts_on.year!=int(year[:4]) or p.ends_on.year!=int(year[5:]): bad("Valid dates and reason required")
@@ -520,7 +574,7 @@ def edit_academic_year(year: str,p: PeriodEdit):
         audit(c,"adjusted","academic_year",old["id"],{"before":old,"after":row,"reason":p.reason})
         return row
 
-@app.patch("/academic-years/{year}/semesters/{semester_id}")
+@router.patch("/academic-years/{year}/semesters/{semester_id}")
 def edit_semester(year: str,semester_id: int,p: SemesterEdit):
     with db() as c:
         period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s FOR UPDATE",(year,)).fetchone()
@@ -536,7 +590,7 @@ def edit_semester(year: str,semester_id: int,p: SemesterEdit):
 class PurchaseTypeRestriction(ChangeReason):
     purchase_type: str | None = Field(default=None,max_length=100)
 
-@app.patch("/funding/{funding_id}/purchase-type")
+@router.patch("/funding/{funding_id}/purchase-type")
 def purchase_type_restriction(funding_id: int,p: PurchaseTypeRestriction):
     if not p.reason.strip(): bad("Reason required")
     restriction=p.purchase_type.strip() if p.purchase_type else None
@@ -553,3 +607,5 @@ def purchase_type_restriction(funding_id: int,p: PurchaseTypeRestriction):
             c.execute("DELETE FROM funding_purchase_type WHERE funding_id=%s",(funding_id,))
         audit(c,"restriction_changed","funding",funding_id,{"before":old,"after":restriction,"reason":p.reason})
         return {"funding_id":funding_id,"purchase_type":restriction}
+
+app.include_router(router)

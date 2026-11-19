@@ -132,3 +132,12 @@ CREATE TABLE IF NOT EXISTS funding_purchase_type (
  funding_id bigint PRIMARY KEY REFERENCES funding(id),
  purchase_type text NOT NULL CHECK(length(trim(purchase_type))>0)
 );
+
+CREATE TABLE IF NOT EXISTS staff_session (
+ token_hash text PRIMARY KEY,
+ username text NOT NULL,
+ expires_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS staff_login_attempt (
+ attempted_at timestamptz NOT NULL DEFAULT now()
+);

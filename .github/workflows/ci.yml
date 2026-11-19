@@ -35,6 +35,7 @@ jobs:
       PGDATABASE: asufc_test
       PGUSER: asufc
       PGPASSWORD: ci-disposable-password
+      SESSION_SECURE: '0'
       STAFF_USER: teststaff
       STAFF_PASSWORD: ci-test-only-password
       ASUFC_TEST_DATABASE: '1'
