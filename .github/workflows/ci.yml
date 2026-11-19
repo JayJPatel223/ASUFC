@@ -94,3 +94,36 @@ jobs:
         working-directory: frontend
       - run: npm run test:e2e
         working-directory: frontend
+  restore:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: asufc_test
+          POSTGRES_USER: asufc
+          POSTGRES_PASSWORD: ci-disposable-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asufc -d asufc_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate backup and restore on disposable PostgreSQL
+        env:
+          PGPASSWORD: ci-disposable-password
+        run: |
+          set -euo pipefail
+          bash -n scripts/backup.sh scripts/restore-check.sh
+          cid=$(docker ps --filter ancestor=postgres:16 --format '{{.ID}}' | head -n1)
+          test -n "$cid"
+          docker exec -i "$cid" psql -U asufc -d asufc_test -v ON_ERROR_STOP=1 < backend/app/schema.sql
+          docker exec "$cid" psql -U asufc -d asufc_test -v ON_ERROR_STOP=1 -c "INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents) VALUES ('Fictional restore test','2026-2027','cash',10000,10000); INSERT INTO funding_receipt(funding_id,cents,actor) VALUES (1,10000,'test'); INSERT INTO budget(funding_id,program_code,cents) VALUES (1,'ASUFCGR',8000); INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES ('2026-11-01','Test','Groceries','',2500); INSERT INTO allocation VALUES (1,1,2500); INSERT INTO staff_session VALUES ('test-hash','teststaff',now()+interval '1 hour');"
+          docker exec "$cid" pg_dump -U asufc -d asufc_test -Fc --no-owner --no-acl --exclude-table-data=public.staff_session --exclude-table-data=public.staff_login_attempt > /tmp/test.dump
+          docker exec "$cid" createdb -U asufc asufc_restore_test
+          docker exec -i "$cid" pg_restore -U asufc -d asufc_restore_test --no-owner --no-acl --exit-on-error < /tmp/test.dump
+          test "$(docker exec "$cid" psql -U asufc -d asufc_restore_test -Atc 'SELECT capacity_cents FROM funding_capacity WHERE id=1')" = 10000
+          test "$(docker exec "$cid" psql -U asufc -d asufc_restore_test -Atc 'SELECT sum(cents) FROM active_allocation')" = 2500
+          test "$(docker exec "$cid" psql -U asufc -d asufc_restore_test -Atc 'SELECT count(*) FROM staff_session')" = 0
+          rm -f /tmp/test.dump

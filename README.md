@@ -22,3 +22,6 @@ STAFF_PASSWORD is a one-time bootstrap password (minimum 16 characters); subsequ
 Use Docker Compose 2.24.4+ on an authorized host, configure ASUFC_DOMAIN to its actual DNS hostname, set unique secrets, and run `docker compose -f docker-compose.yml -f docker-compose.production.yml up --build -d`. The Caddy gateway serves the built frontend and same-origin API, obtains certificates when DNS and ports are configured, and enables secure cookies and security headers. Do not expose the local development configuration. Deployment must be validated with the actual domain and institutional approval; this is not a live deployment.
 
 Browser checks: `cd frontend && npx playwright install chromium && npm run test:e2e` with local API running and STAFF_USER/STAFF_PASSWORD exported; use disposable data only.
+
+## Backup and recovery
+See [recovery runbook](docs/recovery.md). Create an archive with `bash scripts/backup.sh` and validate it using `bash scripts/restore-check.sh PATH.dump`. Use approved encrypted storage; never commit archives.
