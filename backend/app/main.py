@@ -411,3 +411,65 @@ def reconciliation_export(year: str = "2026-2027"):
     from .export import reconciliation_workbook
     content=reconciliation_workbook(reconciliation_report(year))
     return Response(content,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":'attachment; filename="asufc-balances.xlsx"',"Cache-Control":"no-store"})
+
+class ImportWorkbook(BaseModel):
+    content_base64: str = Field(max_length=6700000)
+    sheet: str = Field(min_length=1,max_length=100)
+    mapping: dict[str,str]
+
+def parse_import(p):
+    from base64 import b64decode
+    from .importing import parse_workbook
+    try: return parse_workbook(b64decode(p.content_base64,validate=True),p.sheet,p.mapping)
+    except (ValueError,TypeError) as e: bad(str(e))
+
+def import_rows(c,parsed):
+    if parsed["errors"]: bad("Resolve workbook validation errors first")
+    if not parsed["rows"]: bad("No transactions to import")
+    ids=[a["budget_id"] for r in parsed["rows"] for a in r["allocations"]]
+    c.execute("SELECT id FROM funding WHERE id IN (SELECT funding_id FROM budget WHERE id=ANY(%s)) ORDER BY id FOR UPDATE",(ids,)).fetchall()
+    result=[]
+    for row in parsed["rows"]:
+        ident=row["external_id"]
+        if c.execute("SELECT 1 FROM import_entry WHERE external_id=%s",(ident,)).fetchone(): bad("Already imported external ID: "+ident)
+        p=Purchase.model_validate({k:v for k,v in row.items() if k not in ("row","external_id")})
+        # Exact date, supplier and amount matches are conservative review blockers.
+        if c.execute("SELECT 1 FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id WHERE v.purchase_id IS NULL AND p.purchase_date=%s AND lower(trim(p.supplier))=lower(trim(%s)) AND p.cents=%s",(p.purchase_date,p.supplier,p.cents)).fetchone(): bad("Possible duplicate purchase on row "+str(row["row"]))
+        tx=save_purchase(c,p)
+        inserted=c.execute("INSERT INTO import_entry(external_id,purchase_id) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING external_id",(ident,tx["id"])).fetchone()
+        if not inserted: bad("Already imported external ID: "+ident)
+        result.append(tx["id"])
+    return result
+
+@app.post("/imports/preview")
+def preview_import(p: ImportWorkbook):
+    parsed=parse_import(p)
+    if parsed["errors"] or not parsed["rows"]: return parsed|{"valid":False}
+    # Exercise the actual transaction path, then roll back everything.
+    try:
+        with db() as c:
+            try: import_rows(c,parsed)
+            finally: c.rollback()
+    except HTTPException as e:
+        return parsed|{"valid":False,"validation_error":e.detail}
+    return parsed|{"valid":True}
+
+@app.post("/imports/commit",status_code=201)
+def commit_import(p: ImportWorkbook):
+    parsed=parse_import(p)
+    with db() as c:
+        result=import_rows(c,parsed)
+        audit(c,"imported","purchase",result[0],{"purchase_ids":result})
+        return {"imported":len(result),"purchase_ids":result}
+
+class NewProgram(BaseModel):
+    code: str = Field(pattern=r"^[A-Z0-9&_-]{2,40}$")
+    name: str = Field(min_length=1,max_length=200)
+
+@app.post("/programs",status_code=201)
+def create_program(p: NewProgram):
+    if not p.name.strip(): bad("Name required")
+    with db() as c:
+        row=c.execute("INSERT INTO program(code,name) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING *",(p.code,p.name.strip())).fetchone()
+        if not row: raise HTTPException(409,"Program code already exists")
+        return row

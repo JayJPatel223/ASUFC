@@ -64,3 +64,6 @@ Carry-forward permission and transfer forms, transfer history, separate carried-
 Added independent raw-ledger calculations under a consistent read-only PostgreSQL snapshot; detects mismatched receipts and purchase allocations, cross-year purchases, overspent budgets/funding, overallocations, transfer year/type mismatch. New Reconciliation page with source and budget balances. No external bank reconciliation or automatic repair. Added three unit tests and one PostgreSQL integration regression with deliberately inconsistent disposable test data. CI pending.
 
 Added reconciliation workbook export with funding, budget and issue worksheets, formula-safe text and authenticated download. Added workbook and download regression tests. Internal reconciliation is not external bank verification. CI pending.
+
+## Excel migration and custom programs
+Added bounded XLSX parsing, explicit seven-column mapping, formula rejection, transaction-path preview with rollback, atomic import and stable external ID deduplication. Conservative date/supplier/amount collision blocks potential duplicate imports. Single-budget rows only; split historical purchases require manual entry. Custom program creation added. Actual ASUFC workbook not supplied; mapping and historical expiry policy require confirmation. CI pending.

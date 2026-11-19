@@ -107,3 +107,8 @@ CREATE OR REPLACE VIEW funding_capacity AS
 
 ALTER TABLE budget DROP CONSTRAINT IF EXISTS budget_cents_check;
 ALTER TABLE budget ADD CONSTRAINT budget_cents_check CHECK(cents >= 0);
+
+CREATE TABLE IF NOT EXISTS import_entry (
+ external_id text PRIMARY KEY,
+ purchase_id bigint UNIQUE NOT NULL REFERENCES purchase(id)
+);

@@ -150,3 +150,22 @@ def test_reconciliation_download(client):
     assert response.headers["content-type"]=="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     wb=load_workbook(BytesIO(response.content))
     assert wb["Reconciliation"]["B2"].value=="PASS"
+
+def test_excel_import_atomic_and_duplicate(client):
+    from io import BytesIO
+    from base64 import b64encode
+    from openpyxl import Workbook
+    f=create(client,"/funding",dict(name="Import grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    headers=["external_id","purchase_date","supplier","purchase_type","description","amount","budget_id"]
+    def payload(amount):
+        w=Workbook(); s=w.active;s.append(headers);s.append(["legacy-1","2026-11-01","Test","Groceries","",100,b["id"]]);s.append(["legacy-2","2026-11-02","Test","Groceries","",amount,b["id"]]);out=BytesIO();w.save(out)
+        return dict(content_base64=b64encode(out.getvalue()).decode(),sheet=s.title,mapping={k:k for k in headers})
+    assert not client.post("/imports/preview",json=payload(500)).json()["valid"]
+    assert client.post("/imports/commit",json=payload(500)).status_code==422
+    assert client.get("/transactions").json()==[]
+    assert client.post("/imports/preview",json=payload(200)).json()["valid"]
+    assert client.get("/transactions").json()==[]
+    assert create(client,"/imports/commit",payload(200))["imported"]==2
+    assert client.post("/imports/commit",json=payload(200)).status_code==422
+    assert len(client.get("/transactions").json())==2
