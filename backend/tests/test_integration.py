@@ -126,3 +126,18 @@ def test_carry_forward_conservation(client):
     assert client.post(url,json=payload|{"cents":70001}).status_code==422
     create(client,"/budgets",dict(funding_id=dest["id"],program_code="ASUFCGR",cents=30000))
     assert len(client.get("/funding-transfers").json())==1
+
+def test_reconciliation_report(client):
+    from app.main import db
+    f=create(client,"/funding",dict(name="Reconcile",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=80000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    create(client,"/transactions",dict(purchase_date=date.today().isoformat(),supplier="Test",purchase_type="Groceries",cents=25000,allocations=[dict(budget_id=b["id"],cents=25000)]))
+    report=client.get("/reports/reconciliation").json()
+    assert report["ok"]
+    assert report["funding"][0]["remaining_cents"]==55000
+    assert report["budgets"][0]["remaining_cents"]==25000
+    with db() as c:
+        c.execute("UPDATE funding_receipt SET cents=70000 WHERE funding_id=%s",(f["id"],))
+    report=client.get("/reports/reconciliation").json()
+    assert not report["ok"]
+    assert report["issues"][0]["code"]=="receipt_mismatch"

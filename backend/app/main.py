@@ -390,3 +390,17 @@ def carry_forward(funding_id: int,p: CarryTransfer):
 def funding_transfers():
     with db() as c:
         return c.execute("SELECT t.*,s.academic_year AS source_year,d.academic_year AS destination_year,s.name AS funding_name,s.kind FROM funding_transfer t JOIN funding s ON s.id=t.source_id JOIN funding d ON d.id=t.destination_id ORDER BY t.id DESC").fetchall()
+
+@app.get("/reports/reconciliation")
+def reconciliation_report(year: str = "2026-2027"):
+    from .reconciliation import reconcile
+    validate_year_label(year)
+    with db() as c:
+        c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        funds=c.execute("SELECT * FROM funding ORDER BY id").fetchall()
+        budgets=c.execute("SELECT * FROM budget ORDER BY id").fetchall()
+        purchases=c.execute("SELECT p.*, v.purchase_id IS NOT NULL AS voided FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id").fetchall()
+        allocations=c.execute("SELECT * FROM allocation").fetchall()
+        receipts=c.execute("SELECT * FROM funding_receipt").fetchall()
+        transfers=c.execute("SELECT * FROM funding_transfer").fetchall()
+        return reconcile(funds,budgets,purchases,allocations,receipts,transfers,year)
