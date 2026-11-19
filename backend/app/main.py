@@ -43,9 +43,16 @@ class Funding(BaseModel):
     expiry: date | None = None
     eligible_program: str | None = None
     eligible_supplier: str | None = None
+    organization: str = Field(default="",max_length=200)
+    source_type: str = Field(default="",max_length=100)
+    recurring: bool = False
+    expected_date: date | None = None
+    notes: str = Field(default="",max_length=2000)
+    received_on: date | None = None
 
 class Receipt(BaseModel):
     received_cents: int = Field(ge=0,le=10**12)
+    received_on: date | None = None
 
 class Budget(BaseModel):
     funding_id: int
@@ -68,6 +75,11 @@ def audit(c, action, entity, entity_id, details):
     c.execute('INSERT INTO audit_event(actor,action,entity,entity_id,details) VALUES (%s,%s,%s,%s,%s)',(os.environ.get('STAFF_USER','staff'),action,entity,entity_id,Jsonb(jsonable_encoder(details))))
 
 
+def add_receipt(c,funding_id,cents,received_on):
+    if received_on and received_on>date.today(): bad("Receipt date cannot be in the future")
+    c.execute("INSERT INTO funding_receipt(funding_id,cents,received_on,actor) VALUES (%s,%s,%s,%s)",(funding_id,cents,received_on,os.environ.get("STAFF_USER","staff")))
+
+
 def bad(message):
     raise HTTPException(422, message)
 
@@ -81,8 +93,10 @@ def add_funding(f: Funding):
     if f.received_cents > f.expected_cents: bad("Received exceeds award")
     with db() as c:
         if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
-        created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier)
-         VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s) RETURNING *""",f.model_dump()).fetchone()
+        created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes)
+         VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s) RETURNING *""",f.model_dump()).fetchone()
+        if f.received_cents:
+            add_receipt(c,created["id"],f.received_cents,f.received_on)
         audit(c,"created","funding",created["id"],created)
         return created
 
@@ -93,6 +107,8 @@ def confirm_funding(funding_id: int, r: Receipt):
         if not f: bad("Unknown funding")
         if not f["received_cents"] <= r.received_cents <= f["expected_cents"]: bad("Receipt must increase confirmed funding within award")
         updated=c.execute("UPDATE funding SET received_cents=%s WHERE id=%s RETURNING *",(r.received_cents,funding_id)).fetchone()
+        if r.received_cents>f["received_cents"]:
+            add_receipt(c,funding_id,r.received_cents-f["received_cents"],r.received_on)
         audit(c,"receipt_confirmed","funding",funding_id,{"before":f["received_cents"],"after":updated["received_cents"]})
         return updated
 
@@ -130,24 +146,28 @@ def budgets():
 @app.post("/transactions",status_code=201)
 def record(p: Purchase):
     with db() as c:
-        ids=[a.budget_id for a in p.allocations]
-        # Serialize writers by funding source, then read fresh balances.
-        c.execute("SELECT id FROM funding WHERE id IN (SELECT funding_id FROM budget WHERE id=ANY(%s)) ORDER BY id FOR UPDATE",(ids,)).fetchall()
-        rows={r["id"]:r for r in c.execute(BUDGET_QUERY+" WHERE b.id=ANY(%s)",(ids,)).fetchall()}
-        if any(i not in rows for i in ids): bad("Unknown budget")
-        splits=[{**rows[a.budget_id],**a.model_dump()} for a in p.allocations]
-        try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier)
-        except ValueError as e: bad(str(e))
-        tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s) RETURNING *",p.model_dump()).fetchone()
-        for a in p.allocations:
-            c.execute("INSERT INTO allocation VALUES (%s,%s,%s)",(tx["id"],a.budget_id,a.cents))
-        audit(c,"created","purchase",tx["id"],p.model_dump())
-        return tx
+        return save_purchase(c,p)
+
+
+def save_purchase(c,p):
+    ids=[a.budget_id for a in p.allocations]
+    # Serialize writers by funding source, then read fresh balances.
+    c.execute("SELECT id FROM funding WHERE id IN (SELECT funding_id FROM budget WHERE id=ANY(%s)) ORDER BY id FOR UPDATE",(ids,)).fetchall()
+    rows={r["id"]:r for r in c.execute(BUDGET_QUERY+" WHERE b.id=ANY(%s)",(ids,)).fetchall()}
+    if any(i not in rows for i in ids): bad("Unknown budget")
+    splits=[{**rows[a.budget_id],**a.model_dump()} for a in p.allocations]
+    try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier)
+    except ValueError as e: bad(str(e))
+    tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s) RETURNING *",p.model_dump()).fetchone()
+    for a in p.allocations:
+        c.execute("INSERT INTO allocation VALUES (%s,%s,%s)",(tx["id"],a.budget_id,a.cents))
+    audit(c,"created","purchase",tx["id"],p.model_dump())
+    return tx
 
 @app.get("/transactions")
 def transactions():
     with db() as c:
-        return c.execute("""SELECT p.*, CASE WHEN v.purchase_id IS NULL THEN 'confirmed' ELSE 'voided' END AS status, v.reason AS void_reason, v.created_at AS voided_at, (SELECT json_agg(json_build_object('budget_id',a.budget_id,'program',b.program_code,'funding',f.name,'kind',f.kind,'academic_year',f.academic_year,'cents',a.cents) ORDER BY a.budget_id)
+        return c.execute("""SELECT p.*, CASE WHEN v.purchase_id IS NULL THEN 'confirmed' ELSE 'voided' END AS status, v.reason AS void_reason, v.created_at AS voided_at, (SELECT replacement_id FROM purchase_correction WHERE original_id=p.id) AS replacement_id, (SELECT original_id FROM purchase_correction WHERE replacement_id=p.id) AS original_id, (SELECT json_agg(json_build_object('budget_id',a.budget_id,'program',b.program_code,'funding',f.name,'kind',f.kind,'academic_year',f.academic_year,'cents',a.cents) ORDER BY a.budget_id)
         FROM allocation a JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE a.purchase_id=p.id) AS allocations FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id ORDER BY p.purchase_date DESC,p.id DESC""").fetchall()
 
 @app.get("/dashboard")
@@ -247,3 +267,31 @@ def spending_export(year: str = "2026-2027", start: date | None = None, end: dat
     rows=report_rows(year,start,end,program,supplier,funding_id,purchase_type)
     content=spending_workbook(rows,{"Academic year":year,"Start":start,"End":end,"Program":program,"Supplier":supplier,"Funding ID":funding_id,"Purchase type":purchase_type})
     return Response(content,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":'attachment; filename="asufc-spending.xlsx"',"Cache-Control":"no-store"})
+
+class Correction(ChangeReason):
+    replacement: Purchase
+
+@app.post("/transactions/{purchase_id}/correct",status_code=201)
+def correct_purchase(purchase_id: int, change: Correction):
+    if not change.reason.strip(): bad("Reason required")
+    with db() as c:
+        original=c.execute("SELECT * FROM purchase WHERE id=%s FOR UPDATE",(purchase_id,)).fetchone()
+        if not original: raise HTTPException(404,"Unknown purchase")
+        if c.execute("SELECT 1 FROM purchase_void WHERE purchase_id=%s",(purchase_id,)).fetchone(): raise HTTPException(409,"Purchase already voided")
+        ids=[a.budget_id for a in change.replacement.allocations]
+        # Acquire old and new funding locks in one stable order.
+        c.execute("SELECT id FROM funding WHERE id IN (SELECT funding_id FROM budget WHERE id=ANY(%s) OR id IN (SELECT budget_id FROM allocation WHERE purchase_id=%s)) ORDER BY id FOR UPDATE",(ids,purchase_id)).fetchall()
+        old_year=c.execute("SELECT DISTINCT f.academic_year FROM allocation a JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE a.purchase_id=%s",(purchase_id,)).fetchall()
+        new_year=c.execute("SELECT DISTINCT f.academic_year FROM budget b JOIN funding f ON f.id=b.funding_id WHERE b.id=ANY(%s)",(ids,)).fetchall()
+        if old_year!=new_year: bad("Correction must stay in original academic year")
+        c.execute("INSERT INTO purchase_void(purchase_id,reason,actor) VALUES (%s,%s,%s)",(purchase_id,change.reason.strip(),os.environ.get("STAFF_USER","staff")))
+        replacement=save_purchase(c,change.replacement)
+        c.execute("INSERT INTO purchase_correction VALUES (%s,%s)",(purchase_id,replacement["id"]))
+        audit(c,"corrected","purchase",purchase_id,{"replacement_id":replacement["id"],"reason":change.reason.strip()})
+        return replacement
+
+@app.get("/funding/{funding_id}/receipts")
+def receipts(funding_id: int):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM funding WHERE id=%s",(funding_id,)).fetchone(): raise HTTPException(404,"Unknown funding")
+        return c.execute("SELECT * FROM funding_receipt WHERE funding_id=%s ORDER BY id",(funding_id,)).fetchall()

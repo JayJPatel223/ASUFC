@@ -11,7 +11,7 @@ def client():
     assert os.environ["PGDATABASE"] == "asufc_test"
     with TestClient(app) as client:
         with db() as conn:
-            conn.execute("TRUNCATE audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
         client.auth=(os.environ["STAFF_USER"],os.environ["STAFF_PASSWORD"])
         yield client
 
@@ -71,3 +71,23 @@ def test_filtered_spending_report(client):
     assert client.get("/reports/spending",params={"supplier":"Other"}).json()["purchase_count"] == 0
     assert client.post(f"/transactions/{tx['id']}/void",json={"reason":"Test reversal"}).status_code==200
     assert client.get("/reports/spending").json()["purchase_count"]==0
+
+def test_atomic_correction_and_receipt_history(client):
+    f=create(client,"/funding",dict(name="Test grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=50000,organization="Test organization",received_on="2026-01-01"))
+    assert client.patch(f"/funding/{f['id']}/received",json={"received_cents":80000}).status_code==200
+    receipts=client.get(f"/funding/{f['id']}/receipts").json()
+    assert [x["cents"] for x in receipts]==[50000,30000]
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    payload=dict(purchase_date=date.today().isoformat(),supplier="Test",purchase_type="Groceries",cents=25000,allocations=[dict(budget_id=b["id"],cents=25000)])
+    tx=create(client,"/transactions",payload)
+    url=f"/transactions/{tx['id']}/correct"
+    invalid=payload|{"cents":60000,"allocations":[dict(budget_id=b["id"],cents=60000)]}
+    assert client.post(url,json={"reason":"Incorrect","replacement":invalid}).status_code==422
+    assert client.get("/transactions").json()[0]["status"]=="confirmed"
+    valid=payload|{"cents":30000,"allocations":[dict(budget_id=b["id"],cents=30000)]}
+    replacement=create(client,url,{"reason":"Correct amount","replacement":valid})
+    history=client.get("/transactions").json()
+    assert history[0]["original_id"]==tx["id"]
+    assert history[1]["replacement_id"]==replacement["id"]
+    assert client.get("/dashboard").json()["funding"][0]["spent"]==30000
+    assert client.post(url,json={"reason":"Again","replacement":valid}).status_code==409

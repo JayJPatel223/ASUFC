@@ -47,3 +47,26 @@ CREATE INDEX IF NOT EXISTS audit_event_entity_idx ON audit_event(entity,entity_i
 CREATE OR REPLACE VIEW active_allocation AS
  SELECT a.* FROM allocation a LEFT JOIN purchase_void v ON v.purchase_id=a.purchase_id
  WHERE v.purchase_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS purchase_correction (
+ original_id bigint PRIMARY KEY REFERENCES purchase_void(purchase_id),
+ replacement_id bigint UNIQUE NOT NULL REFERENCES purchase(id),
+ CHECK(original_id <> replacement_id)
+);
+ALTER TABLE funding ADD COLUMN IF NOT EXISTS organization text NOT NULL DEFAULT '';
+ALTER TABLE funding ADD COLUMN IF NOT EXISTS source_type text NOT NULL DEFAULT '';
+ALTER TABLE funding ADD COLUMN IF NOT EXISTS recurring boolean NOT NULL DEFAULT false;
+ALTER TABLE funding ADD COLUMN IF NOT EXISTS expected_date date;
+ALTER TABLE funding ADD COLUMN IF NOT EXISTS notes text NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS funding_receipt (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ funding_id bigint NOT NULL REFERENCES funding(id),
+ cents bigint NOT NULL CHECK(cents > 0),
+ received_on date,
+ recorded_at timestamptz NOT NULL DEFAULT now(),
+ actor text NOT NULL
+);
+-- Legacy amounts have no known receipt date; retain that uncertainty.
+INSERT INTO funding_receipt(funding_id,cents,actor)
+ SELECT f.id,f.received_cents,'legacy opening balance' FROM funding f
+ WHERE f.received_cents>0 AND NOT EXISTS (SELECT 1 FROM funding_receipt r WHERE r.funding_id=f.id);
