@@ -1,6 +1,6 @@
 from datetime import date
 
-def validate_purchase(total: int, allocations: list[dict], purchase_date: date, supplier: str):
+def validate_purchase(total: int, allocations: list[dict], purchase_date: date, supplier: str, purchase_type: str = ''):
     if total <= 0 or not allocations or sum(a["cents"] for a in allocations) != total:
         raise ValueError("Allocations must equal a positive purchase total")
     if len({a["budget_id"] for a in allocations}) != len(allocations):
@@ -14,6 +14,8 @@ def validate_purchase(total: int, allocations: list[dict], purchase_date: date, 
             raise ValueError("Funding expired")
         if a["eligible_program"] and a["eligible_program"] != a["program_code"]:
             raise ValueError("Program not eligible")
+        if a.get("eligible_purchase_type") and a["eligible_purchase_type"].strip().casefold()!=purchase_type.strip().casefold():
+            raise ValueError("Purchase type not eligible")
         if a["eligible_supplier"] and a["eligible_supplier"].casefold() != supplier.casefold():
             raise ValueError("Supplier not eligible")
     for fund in {a["funding_id"] for a in allocations}:

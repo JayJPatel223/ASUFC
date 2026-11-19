@@ -72,3 +72,5 @@ Added audited transfer reversals (blocked if destination capacity would fall bel
 
 ## Financial closure improvements
 Added split-row Excel import (repeated external ID with identical metadata and distinct budget IDs; amount per allocation), automatic refresh, manual duplicate review reason and serialized purchase duplicate checks, audited academic-year/semester edits with overlap and existing-record safeguards. Three parser regression tests and one API integration regression added. CI pending. Actual workbook and stakeholder grant policies remain unverified.
+
+Added enforceable purchase-type restrictions to purchases, corrections, imports and allocation recommendations; carry-forward inherits restrictions, and editing is audited and blocked for conflicting historical spending or active transfers. CI pending.

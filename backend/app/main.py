@@ -118,7 +118,7 @@ def confirm_funding(funding_id: int, r: Receipt):
 @app.get("/funding")
 def funding():
     with db() as c:
-        return c.execute("""SELECT f.*, capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
+        return c.execute("""SELECT f.*, (SELECT purchase_type FROM funding_purchase_type WHERE funding_id=f.id) AS eligible_purchase_type, capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
         capacity_cents-COALESCE((SELECT sum(b.cents) FROM budget b WHERE b.funding_id=f.id),0) AS unallocated_cents FROM funding_capacity f ORDER BY id""").fetchall()
 
 @app.post("/budgets",status_code=201)
@@ -136,7 +136,7 @@ def add_budget(b: Budget):
         audit(c,"created","budget",created["id"],created)
         return created
 
-BUDGET_QUERY="""SELECT b.*, f.name AS funding_name,f.kind,f.academic_year,f.expiry,f.eligible_program,f.eligible_supplier,
+BUDGET_QUERY="""SELECT b.*, f.name AS funding_name,f.kind,f.academic_year,f.expiry,f.eligible_program,f.eligible_supplier,(SELECT purchase_type FROM funding_purchase_type WHERE funding_id=f.id) AS eligible_purchase_type,
  b.cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0) AS remaining,
  f.capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget bb ON bb.id=a.budget_id WHERE bb.funding_id=f.id),0) AS fund_remaining
  FROM budget b JOIN funding_capacity f ON f.id=b.funding_id"""
@@ -163,7 +163,7 @@ def save_purchase(c,p):
     for year in {a["academic_year"] for a in splits}:
         period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(year,)).fetchone()
         if period and not period["starts_on"] <= p.purchase_date <= period["ends_on"]: bad("Purchase date outside configured academic year")
-    try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier)
+    try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier,p.purchase_type)
     except ValueError as e: bad(str(e))
     if c.execute("SELECT 1 FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id WHERE v.purchase_id IS NULL AND p.purchase_date=%s AND lower(trim(p.supplier))=lower(trim(%s)) AND p.cents=%s",(p.purchase_date,p.supplier,p.cents)).fetchone() and not p.duplicate_reason.strip(): bad("Possible duplicate purchase; provide a review reason if legitimate")
     tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s) RETURNING *",p.model_dump()).fetchone()
@@ -196,13 +196,14 @@ class SuggestionRequest(BaseModel):
     purchase_date: date
     cents: int = Field(gt=0,le=10**12)
     preferred_funding: int | None = None
+    purchase_type: str = Field(default="",max_length=100)
 
 @app.post("/allocation-suggestions")
 def allocate_suggestion(p: SuggestionRequest):
     with db() as c:
         rows=c.execute(BUDGET_QUERY+" WHERE b.program_code=%s AND f.academic_year=%s",(p.program_code,p.academic_year)).fetchall()
         try:
-            return suggest_allocations(rows,p.cents,p.program_code,p.academic_year,p.kind,p.supplier,p.purchase_date,p.preferred_funding)
+            return suggest_allocations(rows,p.cents,p.program_code,p.academic_year,p.kind,p.supplier,p.purchase_date,p.preferred_funding,p.purchase_type)
         except ValueError as e:
             bad(str(e))
 
@@ -386,6 +387,7 @@ def carry_forward(funding_id: int,p: CarryTransfer):
         # A transfer creates a new funding bucket with no new award or receipt.
         dest=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,notes,carry_eligible)
         VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,false,%s,false) RETURNING *""",(source["name"],p.destination_year,source["kind"],source["expiry"],source["eligible_program"],source["eligible_supplier"],source["organization"],source["source_type"],source["notes"])).fetchone()
+        c.execute("INSERT INTO funding_purchase_type(funding_id,purchase_type) SELECT %s,purchase_type FROM funding_purchase_type WHERE funding_id=%s",(dest["id"],funding_id))
         transfer=c.execute("INSERT INTO funding_transfer(source_id,destination_id,cents,reason) VALUES (%s,%s,%s,%s) RETURNING *",(funding_id,dest["id"],p.cents,p.reason.strip())).fetchone()
         audit(c,"carried_forward","funding",funding_id,transfer)
         return transfer
@@ -530,3 +532,24 @@ def edit_semester(year: str,semester_id: int,p: SemesterEdit):
         row=c.execute("UPDATE semester SET name=%s,starts_on=%s,ends_on=%s WHERE id=%s RETURNING *",(p.name.strip(),p.starts_on,p.ends_on,semester_id)).fetchone()
         audit(c,"adjusted","semester",semester_id,{"before":old,"after":row,"reason":p.reason})
         return row
+
+class PurchaseTypeRestriction(ChangeReason):
+    purchase_type: str | None = Field(default=None,max_length=100)
+
+@app.patch("/funding/{funding_id}/purchase-type")
+def purchase_type_restriction(funding_id: int,p: PurchaseTypeRestriction):
+    if not p.reason.strip(): bad("Reason required")
+    restriction=p.purchase_type.strip() if p.purchase_type else None
+    if p.purchase_type is not None and not restriction: bad("Restriction cannot be blank")
+    with db() as c:
+        source=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
+        if not source: raise HTTPException(404,"Unknown funding")
+        if c.execute("SELECT 1 FROM active_funding_transfer WHERE source_id=%s OR destination_id=%s",(funding_id,funding_id)).fetchone(): bad("Reverse active transfers before changing restrictions")
+        if restriction and c.execute("SELECT 1 FROM active_allocation a JOIN budget b ON b.id=a.budget_id JOIN purchase p ON p.id=a.purchase_id WHERE b.funding_id=%s AND lower(trim(p.purchase_type))<>lower(%s)",(funding_id,restriction)).fetchone(): bad("Restriction conflicts with existing spending")
+        old=c.execute("SELECT * FROM funding_purchase_type WHERE funding_id=%s",(funding_id,)).fetchone()
+        if restriction:
+            c.execute("INSERT INTO funding_purchase_type VALUES (%s,%s) ON CONFLICT(funding_id) DO UPDATE SET purchase_type=excluded.purchase_type",(funding_id,restriction))
+        else:
+            c.execute("DELETE FROM funding_purchase_type WHERE funding_id=%s",(funding_id,))
+        audit(c,"restriction_changed","funding",funding_id,{"before":old,"after":restriction,"reason":p.reason})
+        return {"funding_id":funding_id,"purchase_type":restriction}

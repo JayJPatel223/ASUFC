@@ -211,3 +211,12 @@ def test_manual_duplicate_review_and_period_edit(client):
     assert client.patch(url,json=dict(name="Fall term",starts_on="2026-09-01",ends_on="2026-12-20",reason="Calendar correction")).status_code==200
     assert client.patch("/academic-years/2026-2027",json=dict(starts_on="2026-10-01",ends_on="2027-08-31",reason="Test")).status_code==422
     assert client.patch("/academic-years/2026-2027",json=dict(starts_on="2026-08-01",ends_on="2027-08-31",reason="Calendar correction")).status_code==200
+
+def test_purchase_type_restriction(client):
+    f=create(client,"/funding",dict(name="Restricted",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    assert client.patch(f"/funding/{f['id']}/purchase-type",json=dict(purchase_type="Groceries",reason="Grant terms")).status_code==200
+    payload=dict(purchase_date="2026-11-01",supplier="Shop",purchase_type="Equipment",cents=1000,allocations=[dict(budget_id=b["id"],cents=1000)])
+    assert client.post("/transactions",json=payload).status_code==422
+    create(client,"/transactions",payload|{"purchase_type":"Groceries"})
+    assert client.patch(f"/funding/{f['id']}/purchase-type",json=dict(purchase_type="Equipment",reason="Invalid change")).status_code==422

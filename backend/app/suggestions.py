@@ -1,7 +1,7 @@
 from datetime import date
 
 
-def suggest_allocations(rows, total, program, year, kind, supplier, purchase_date, preferred_funding=None):
+def suggest_allocations(rows, total, program, year, kind, supplier, purchase_date, preferred_funding=None, purchase_type=''):
     """Read-only proposal for one program and one payment kind; never saves records."""
     if total <= 0 or not supplier.strip() or kind not in ('cash', 'credit'):
         raise ValueError('Provide a positive amount, supplier and payment type')
@@ -12,6 +12,8 @@ def suggest_allocations(rows, total, program, year, kind, supplier, purchase_dat
         if row['expiry'] and row['expiry'] < max(purchase_date, date.today()):
             continue
         if row['eligible_program'] and row['eligible_program'] != program:
+            continue
+        if row.get('eligible_purchase_type') and row['eligible_purchase_type'].strip().casefold()!=purchase_type.strip().casefold():
             continue
         if row['eligible_supplier'] and row['eligible_supplier'].casefold() != supplier.casefold():
             continue

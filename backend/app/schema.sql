@@ -127,3 +127,8 @@ CREATE OR REPLACE VIEW funding_capacity AS
  FROM funding f
  LEFT JOIN (SELECT destination_id,sum(cents) AS cents FROM active_funding_transfer GROUP BY destination_id) i ON i.destination_id=f.id
  LEFT JOIN (SELECT source_id,sum(cents) AS cents FROM active_funding_transfer GROUP BY source_id) o ON o.source_id=f.id;
+
+CREATE TABLE IF NOT EXISTS funding_purchase_type (
+ funding_id bigint PRIMARY KEY REFERENCES funding(id),
+ purchase_type text NOT NULL CHECK(length(trim(purchase_type))>0)
+);
