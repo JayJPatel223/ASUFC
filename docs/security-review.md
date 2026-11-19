@@ -16,3 +16,5 @@ Scope: development prototype, fictional records, source inspection and automated
 | Finance | Database constraints, transaction locks, duplicate review, audit history and reconciliation. Audit log is not tamper-evident against privileged database operators. |
 
 Release gates: all CI jobs green, known vulnerabilities remediated or expressly assessed, stakeholder financial acceptance, production configuration review, independent security assessment and approved data handling. Do not use real records before authorization.
+
+Follow-up: Vite remediation audit passed; full finance browser regression exposed a label/locator issue. Explicit program label and additional reporting/import validation changes are under CI. No release approval implied.

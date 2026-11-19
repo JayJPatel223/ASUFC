@@ -247,7 +247,9 @@ def transactions():
 
 @router.get("/dashboard")
 def dashboard(year: str = "2026-2027"):
+    validate_year_label(year)
     with db() as c:
+        c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         return {"funding":c.execute("""SELECT kind, sum(received_cents) AS received, sum(expected_cents-received_cents) AS expected, sum(carried_in_cents) AS carried_in, sum(carried_out_cents) AS carried_out, sum(capacity_cents) AS capacity,
         sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0)) AS spent
         FROM funding_capacity f WHERE academic_year=%s GROUP BY kind""",(year,)).fetchall(),
@@ -267,7 +269,11 @@ class SuggestionRequest(BaseModel):
 
 @router.post("/allocation-suggestions")
 def allocate_suggestion(p: SuggestionRequest):
+    validate_year_label(p.academic_year)
     with db() as c:
+        c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(p.academic_year,)).fetchone()
+        if period and not period["starts_on"] <= p.purchase_date <= period["ends_on"]: bad("Purchase date outside configured academic year")
         rows=c.execute(BUDGET_QUERY+" WHERE b.program_code=%s AND f.academic_year=%s",(p.program_code,p.academic_year)).fetchall()
         try:
             return suggest_allocations(rows,p.cents,p.program_code,p.academic_year,p.kind,p.supplier,p.purchase_date,p.preferred_funding,p.purchase_type)
@@ -316,7 +322,8 @@ def audit_history():
         return c.execute("SELECT * FROM audit_event ORDER BY id DESC LIMIT 500").fetchall()
 
 def report_rows(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
-    from .reporting import summarize, validate_period
+    from .reporting import validate_period
+    validate_year_label(year)
     try:
         validate_period(start,end)
     except ValueError as e:
@@ -374,7 +381,7 @@ def receipts(funding_id: int):
         return c.execute("SELECT * FROM funding_receipt WHERE funding_id=%s ORDER BY id",(funding_id,)).fetchall()
 
 def validate_year_label(year):
-    if len(year)!=9 or year[4]!="-" or not year[:4].isdigit() or not year[5:].isdigit() or int(year[5:])!=int(year[:4])+1:
+    if len(year)!=9 or year[4]!="-" or not year.isascii() or not year[:4].isdigit() or not year[5:].isdigit() or int(year[:4])<1 or int(year[5:])!=int(year[:4])+1:
         bad("Academic year must contain consecutive years, e.g. 2026-2027")
 
 class AcademicPeriod(BaseModel):

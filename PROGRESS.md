@@ -95,3 +95,6 @@ Added dependency audit CI, backup freshness and corruption monitoring tests, pro
 
 ## Security review and dependency remediation
 CI 44604770221: Python audit clean; npm reported moderate esbuild and high Vite dependency vulnerability. Upgrade Vite to audit-recommended 8.3.8, preserve audit gate. Backend/frontend/restore/backup-monitor/gateway passed; financial browser result pending at review. Added safe validation error responses (no raw passwords or uploaded data), Docker context exclusions, and documented security review with unresolved release gates. New CI pending.
+
+## Pre-AI regression review
+CI 44605369849: dependency audit, backend/frontend, gateway, restore, monitor pass; finance browser failed at Program select locator. Added explicit accessible program label, consistent dashboard/suggestion database snapshots, report year validation and suggestion period boundary check, defusedxml parsing dependency and malformed worksheet handling. Full CI reruns on this commit. No AI integration yet.

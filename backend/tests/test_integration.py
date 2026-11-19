@@ -302,3 +302,10 @@ def test_validation_does_not_echo_password(client):
     assert r.status_code==422
     assert "fictional-secret-" not in r.text
     assert r.headers["cache-control"]=="no-store"
+
+def test_report_year_and_suggestion_boundaries(client):
+    assert client.get("/dashboard?year=2026-2028").status_code==422
+    assert client.get("/reports/spending?year=invalid").status_code==422
+    create(client,"/academic-years",dict(academic_year="2026-2027",starts_on="2026-09-01",ends_on="2027-08-31"))
+    p=dict(program_code="ASUFCGR",academic_year="2026-2027",kind="cash",supplier="Shop",purchase_date="2026-08-31",cents=1000)
+    assert client.post("/allocation-suggestions",json=p).status_code==422

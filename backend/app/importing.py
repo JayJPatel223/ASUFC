@@ -4,6 +4,8 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from zipfile import ZipFile
 from openpyxl import load_workbook
+from defusedxml.common import DefusedXmlException
+from xml.etree.ElementTree import ParseError
 
 FIELDS=("external_id","purchase_date","supplier","purchase_type","description","amount","budget_id")
 
@@ -56,4 +58,6 @@ def parse_workbook(content, sheet, mapping):
             except (ValueError,InvalidOperation,TypeError,OverflowError) as e:
                 errors.append(dict(row=n,error=str(e)))
         return dict(rows=rows,errors=errors)
+    except (DefusedXmlException,ParseError,IndexError,KeyError, OSError) as e:
+        raise ValueError("Malformed or unsafe worksheet") from e
     finally: wb.close()
