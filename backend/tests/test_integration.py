@@ -7,11 +7,13 @@ pytestmark = pytest.mark.skipif(os.getenv("ASUFC_TEST_DATABASE") != "1", reason=
 @pytest.fixture
 def client():
     from app.main import app, db
+    from app.credentials import hash_password
     from fastapi.testclient import TestClient
     assert os.environ["PGDATABASE"] == "asufc_test"
     with TestClient(app) as client:
         with db() as conn:
             conn.execute("TRUNCATE staff_session,staff_login_attempt,funding_transfer,semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
+            conn.execute("UPDATE staff_credential SET password_hash=%s WHERE username=%s",(hash_password(os.environ["STAFF_PASSWORD"]),os.environ["STAFF_USER"]))
         client.headers["X-ASUFC-Request"]="1"
         assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]}).status_code==200
         yield client
@@ -254,3 +256,18 @@ def test_login_throttle_and_expiry(client):
     for _ in range(10):
         assert client.post("/auth/login",json={"username":"wrong","password":"wrong"}).status_code==401
     assert client.post("/auth/login",json={"username":os.environ["STAFF_USER"],"password":os.environ["STAFF_PASSWORD"]}).status_code==429
+
+def test_password_rotation_revokes_sessions(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    old=os.environ["STAFF_PASSWORD"]
+    user=os.environ["STAFF_USER"]
+    new="new-test-password-unique"
+    with TestClient(app) as other:
+        other.headers["X-ASUFC-Request"]="1"
+        assert other.post("/auth/login",json={"username":user,"password":old}).status_code==200
+        assert client.post("/auth/password",json={"current_password":"wrong","new_password":new}).status_code==401
+        assert client.post("/auth/password",json={"current_password":old,"new_password":new}).status_code==200
+        assert other.get("/funding").status_code==401
+        assert other.post("/auth/login",json={"username":user,"password":old}).status_code==401
+        assert other.post("/auth/login",json={"username":user,"password":new}).status_code==200

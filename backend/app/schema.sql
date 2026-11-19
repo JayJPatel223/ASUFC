@@ -141,3 +141,9 @@ CREATE TABLE IF NOT EXISTS staff_session (
 CREATE TABLE IF NOT EXISTS staff_login_attempt (
  attempted_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS staff_credential (
+ username text PRIMARY KEY,
+ password_hash text NOT NULL,
+ updated_at timestamptz NOT NULL DEFAULT now()
+);

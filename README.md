@@ -8,9 +8,12 @@ Development prototype. Use fictional data only; never upload real records or sec
 4. In another terminal run `cd frontend`, `npm install`, then `npm run dev`.
 5. Open the local Vite URL printed in the terminal (usually http://127.0.0.1:5173). Sign in with configured STAFF_USER and STAFF_PASSWORD.
 
-The Vite development proxy connects to the API at 127.0.0.1:8000. API documentation is at http://127.0.0.1:8000/docs. Do not expose this development configuration publicly.
+The Vite development proxy connects to the API at 127.0.0.1:8000. Public API documentation is disabled. Do not expose this development configuration publicly.
 
 Backend unit tests: `docker compose run --rm api python -m pytest`.
 Frontend type check and build: `cd frontend && npm run build`.
 
 See docs/architecture.md and PROGRESS.md for limitations. No production readiness claim.
+
+## Staff credentials
+STAFF_PASSWORD is a one-time bootstrap password (minimum 16 characters); subsequent changes are stored as salted scrypt hashes. Change password in Account; all sessions are revoked. Trusted host operator recovery: `docker compose exec api python -m app.reset_password`. Password is entered interactively, never as a shell argument. Keep STAFF_USER stable; changing it is not an account handover procedure.

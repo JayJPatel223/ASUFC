@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from fastapi.encoders import jsonable_encoder
 from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response
 from hashlib import sha256
+from .credentials import hash_password,verify_password,validate_password
 from pydantic import BaseModel, Field
 from .rules import validate_purchase
 from .suggestions import suggest_allocations
@@ -19,10 +20,14 @@ def db():
 
 @asynccontextmanager
 async def lifespan(app):
-    if len(os.environ.get("STAFF_PASSWORD", "")) < 12 or os.environ["STAFF_PASSWORD"] == "replace-with-random-password":
-        raise RuntimeError("Set a random staff password of at least 12 characters")
     with db() as conn:
         conn.execute(Path(__file__).with_name("schema.sql").read_text())
+        conn.execute("SELECT pg_advisory_xact_lock(2663002)")
+        user=os.environ.get("STAFF_USER","staff")
+        if not conn.execute("SELECT 1 FROM staff_credential WHERE username=%s",(user,)).fetchone():
+            password=os.environ.get("STAFF_PASSWORD","")
+            validate_password(password)
+            conn.execute("INSERT INTO staff_credential(username,password_hash) VALUES (%s,%s)",(user,hash_password(password)))
     yield
 
 COOKIE="asufc_session"
@@ -56,7 +61,8 @@ def login(p: Login,request: Request,response: Response):
         c.execute("DELETE FROM staff_login_attempt WHERE attempted_at<now()-interval '15 minutes'")
         attempts=c.execute("SELECT count(*) AS n FROM staff_login_attempt").fetchone()["n"]
         if attempts>=10: raise HTTPException(429,"Too many attempts; try again in 15 minutes")
-        valid=secrets.compare_digest(p.username.encode(),user.encode()) & secrets.compare_digest(p.password.encode(),os.environ["STAFF_PASSWORD"].encode())
+        credential=c.execute("SELECT password_hash FROM staff_credential WHERE username=%s",(user,)).fetchone()
+        valid=secrets.compare_digest(p.username.encode(),user.encode()) & verify_password(p.password,credential["password_hash"])
         if not valid:
             c.execute("INSERT INTO staff_login_attempt DEFAULT VALUES")
         else:
@@ -607,5 +613,32 @@ def purchase_type_restriction(funding_id: int,p: PurchaseTypeRestriction):
             c.execute("DELETE FROM funding_purchase_type WHERE funding_id=%s",(funding_id,))
         audit(c,"restriction_changed","funding",funding_id,{"before":old,"after":restriction,"reason":p.reason})
         return {"funding_id":funding_id,"purchase_type":restriction}
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(max_length=1024)
+    new_password: str = Field(max_length=1024)
+
+@router.post("/auth/password")
+def change_password(p: PasswordChange, request: Request, response: Response):
+    try: validate_password(p.new_password)
+    except ValueError as e: raise HTTPException(422,str(e))
+    user=os.environ.get("STAFF_USER","staff")
+    with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663002)")
+        if not c.execute("SELECT 1 FROM staff_session WHERE token_hash=%s AND expires_at>now()",(token_hash(request.cookies[COOKIE]),)).fetchone(): raise HTTPException(401,"Staff session expired")
+        credential=c.execute("SELECT password_hash FROM staff_credential WHERE username=%s",(user,)).fetchone()
+        c.execute("DELETE FROM staff_login_attempt WHERE attempted_at<now()-interval '15 minutes'")
+        if c.execute("SELECT count(*) AS n FROM staff_login_attempt").fetchone()["n"]>=10: raise HTTPException(429,"Too many attempts")
+        valid=verify_password(p.current_password,credential["password_hash"])
+        if not valid: c.execute("INSERT INTO staff_login_attempt DEFAULT VALUES")
+        else:
+            if p.current_password==p.new_password: raise HTTPException(422,"Choose a different password")
+            c.execute("UPDATE staff_credential SET password_hash=%s,updated_at=now() WHERE username=%s",(hash_password(p.new_password),user))
+            c.execute("DELETE FROM staff_session")
+            c.execute("DELETE FROM staff_login_attempt")
+            audit(c,"password_changed","staff_account",0,{})
+    if not valid: raise HTTPException(401,"Current password incorrect")
+    response.delete_cookie(COOKIE,path="/",secure=os.getenv("SESSION_SECURE","1")!="0",httponly=True,samesite="strict")
+    return {"ok":True}
 
 app.include_router(router)

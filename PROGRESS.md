@@ -79,3 +79,6 @@ Connected purchase-type restriction display and suggestion requests, with additi
 
 ## Staff session authentication
 Replaced repeated Basic credentials with opaque hashed database sessions, 8-hour expiration, HttpOnly SameSite Strict cookies, HTTPS Secure by default outside local Compose, custom mutation header, login throttle and server logout. All financial endpoints use protected router; no public registration or API docs. Existing single staff environment credentials remain bootstrap mechanism, not full account lifecycle. Added session/expiry/throttle regression tests and updated frontend utilities. CI pending. Production TLS, credential rotation, recovery, browser security tests still required.
+
+## Credential lifecycle
+Added salted scrypt credential persistence, authenticated password rotation, all-session revocation, operator-only interactive recovery and account UI. Bootstrap environment password no longer authenticates after rotation. Tests added; CI pending. Single designated account retained; full institutional identity and handover policy not assumed.
