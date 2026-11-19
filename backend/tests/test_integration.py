@@ -57,3 +57,17 @@ def test_void_and_adjustment(client):
     assert client.patch(f"/budgets/{b['id']}",json=dict(cents=110000,reason="Excess")).status_code==422
     actions={e["action"] for e in client.get("/audit").json()}
     assert {"created","voided","adjusted"} <= actions
+
+def test_filtered_spending_report(client):
+    f=create(client,"/funding",dict(name="Report test grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
+    g=create(client,"/funding",dict(name="Report test credit",academic_year="2026-2027",kind="credit",expected_cents=100000,received_cents=100000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    c=create(client,"/budgets",dict(funding_id=g["id"],program_code="ASUFCFSBP",cents=50000))
+    tx=create(client,"/transactions",dict(purchase_date=date.today().isoformat(),supplier="Example",purchase_type="Groceries",cents=25000,allocations=[dict(budget_id=b["id"],cents=15000),dict(budget_id=c["id"],cents=10000)]))
+    report=client.get("/reports/spending").json()
+    assert report["purchase_count"] == 1
+    assert report["totals"] == {"cash_cents":15000,"credit_cents":10000}
+    assert client.get("/reports/spending",params={"program":"ASUFCGR"}).json()["totals"] == {"cash_cents":15000,"credit_cents":0}
+    assert client.get("/reports/spending",params={"supplier":"Other"}).json()["purchase_count"] == 0
+    assert client.post(f"/transactions/{tx['id']}/void",json={"reason":"Test reversal"}).status_code==200
+    assert client.get("/reports/spending").json()["purchase_count"]==0
