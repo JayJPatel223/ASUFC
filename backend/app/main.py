@@ -404,3 +404,10 @@ def reconciliation_report(year: str = "2026-2027"):
         receipts=c.execute("SELECT * FROM funding_receipt").fetchall()
         transfers=c.execute("SELECT * FROM funding_transfer").fetchall()
         return reconcile(funds,budgets,purchases,allocations,receipts,transfers,year)
+
+@app.get("/reports/reconciliation.xlsx")
+def reconciliation_export(year: str = "2026-2027"):
+    from fastapi.responses import Response
+    from .export import reconciliation_workbook
+    content=reconciliation_workbook(reconciliation_report(year))
+    return Response(content,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":'attachment; filename="asufc-balances.xlsx"',"Cache-Control":"no-store"})

@@ -50,3 +50,38 @@ def spending_workbook(rows, filters):
     out=BytesIO()
     wb.save(out)
     return out.getvalue()
+
+def reconciliation_workbook(report):
+    wb=Workbook()
+    summary=wb.active
+    summary.title="Reconciliation"
+    summary.append(["Academic year",report["year"]])
+    summary.append(["Internal consistency","PASS" if report["ok"] else "REVIEW REQUIRED"])
+    summary.append(["Issue count",len(report["issues"])])
+    summary.append(["Scope","Internal ledger only; not bank statement reconciliation"])
+    definitions=[
+        ("Funding",report["funding"],[("id","Funding ID"),("name","Funding source"),("kind","Type"),("expected_cents","Expected outstanding"),("received_cents","Received"),("carried_in_cents","Carry in"),("carried_out_cents","Carry out"),("capacity_cents","Net capacity"),("allocated_cents","Allocated"),("spent_cents","Spent"),("remaining_cents","Remaining"),("unallocated_cents","Unallocated")]),
+        ("Budgets",report["budgets"],[("id","Budget ID"),("funding_id","Funding ID"),("program_code","Program"),("allocated_cents","Allocated"),("spent_cents","Spent"),("remaining_cents","Remaining")]),
+        ("Issues",report["issues"],[("code","Issue"),("record_id","Record ID"),("expected","Expected (raw)"),("actual","Actual (raw)")])
+    ]
+    for name,rows,cols in definitions:
+        sh=wb.create_sheet(name)
+        sh.append([label for _,label in cols])
+        for r in rows:
+            sh.append([r[key]/100 if key.endswith("_cents") else r[key] for key,_ in cols])
+            for i,(key,_) in enumerate(cols,1):
+                if key.endswith("_cents"): sh.cell(sh.max_row,i).number_format='"$"#,##0.00'
+        sh.auto_filter.ref=sh.dimensions
+    for sh in wb:
+        sh.freeze_panes="A2"
+        for row in sh.iter_rows():
+            for cell in row:
+                if isinstance(cell.value,str): cell.data_type="s"
+        for cell in sh[1]:
+            cell.font=Font(bold=True,color="FFFFFF")
+            cell.fill=PatternFill("solid",fgColor="702D42")
+        for col in sh.columns:
+            sh.column_dimensions[get_column_letter(col[0].column)].width=min(58,max(14,max(len(str(c.value or "")) for c in col)+2))
+    out=BytesIO()
+    wb.save(out)
+    return out.getvalue()

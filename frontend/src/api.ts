@@ -24,11 +24,11 @@ export const money=(n:number)=>new Intl.NumberFormat('en-CA',{style:'currency',c
 
 export type AuditEvent={id:number;actor:string;action:string;entity:string;entity_id:number;details:unknown;created_at:string};
 
-export async function downloadReport(api:Api,path:string) { 
+export async function downloadReport(api:Api,path:string,filename='asufc-spending.xlsx') { 
  // Use the same authenticated request path, but request a binary response.
  const blob=await api<Blob>(path,'GET',undefined,'blob');
  const url=URL.createObjectURL(blob);const link=document.createElement('a');
- link.href=url;link.download='asufc-spending.xlsx';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ link.href=url;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
 export type FundingReceipt={id:number;funding_id:number;cents:number;received_on:string|null;recorded_at:string;actor:string};

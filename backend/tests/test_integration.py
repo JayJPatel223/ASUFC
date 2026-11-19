@@ -141,3 +141,12 @@ def test_reconciliation_report(client):
     report=client.get("/reports/reconciliation").json()
     assert not report["ok"]
     assert report["issues"][0]["code"]=="receipt_mismatch"
+
+def test_reconciliation_download(client):
+    from io import BytesIO
+    from openpyxl import load_workbook
+    response=client.get("/reports/reconciliation.xlsx")
+    assert response.status_code==200
+    assert response.headers["content-type"]=="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    wb=load_workbook(BytesIO(response.content))
+    assert wb["Reconciliation"]["B2"].value=="PASS"

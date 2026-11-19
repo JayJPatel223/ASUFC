@@ -62,3 +62,5 @@ Carry-forward permission and transfer forms, transfer history, separate carried-
 
 ## Internal reconciliation and balance reports
 Added independent raw-ledger calculations under a consistent read-only PostgreSQL snapshot; detects mismatched receipts and purchase allocations, cross-year purchases, overspent budgets/funding, overallocations, transfer year/type mismatch. New Reconciliation page with source and budget balances. No external bank reconciliation or automatic repair. Added three unit tests and one PostgreSQL integration regression with deliberately inconsistent disposable test data. CI pending.
+
+Added reconciliation workbook export with funding, budget and issue worksheets, formula-safe text and authenticated download. Added workbook and download regression tests. Internal reconciliation is not external bank verification. CI pending.

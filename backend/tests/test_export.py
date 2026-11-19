@@ -18,3 +18,12 @@ def test_empty_export():
     wb=load_workbook(BytesIO(spending_workbook([],{})))
     assert wb["Allocations"].max_row==1
     assert ("Cash spent",0) in list(wb["Summary"].values)
+
+def test_reconciliation_export():
+    from app.export import reconciliation_workbook
+    report=dict(year="2026-2027",ok=False,issues=[dict(code="receipt_mismatch",record_id=1,expected=10000,actual=9000)],funding=[dict(id=1,name="=1+1",kind="cash",expected_cents=0,received_cents=10000,carried_in_cents=0,carried_out_cents=1000,capacity_cents=9000,allocated_cents=5000,spent_cents=2000,remaining_cents=7000,unallocated_cents=4000)],budgets=[])
+    wb=load_workbook(BytesIO(reconciliation_workbook(report)))
+    assert wb.sheetnames==["Reconciliation","Funding","Budgets","Issues"]
+    assert wb["Funding"]["B2"].data_type=="s"
+    assert wb["Funding"]["K2"].value==70
+    assert wb["Issues"]["A2"].value=="receipt_mismatch"
