@@ -1,7 +1,7 @@
 export type Program={code:string;name:string};
-export type Funding={id:number;name:string;academic_year:string;kind:'cash'|'credit';expected_cents:number;received_cents:number;remaining_cents:number;unallocated_cents:number;expiry:string|null;eligible_program:string|null;eligible_supplier:string|null};
+export type Funding={organization:string;source_type:string;recurring:boolean;expected_date:string|null;notes:string;id:number;name:string;academic_year:string;kind:'cash'|'credit';expected_cents:number;received_cents:number;remaining_cents:number;unallocated_cents:number;expiry:string|null;eligible_program:string|null;eligible_supplier:string|null};
 export type Budget={id:number;funding_id:number;funding_name:string;program_code:string;academic_year:string;kind:string;cents:number;remaining:number;expiry:string|null};
-export type Transaction={status:'confirmed'|'voided';void_reason:string|null;voided_at:string|null;id:number;purchase_date:string;supplier:string;purchase_type:string;description:string;cents:number;allocations:{budget_id:number;program:string;funding:string;kind:string;academic_year:string;cents:number}[]};
+export type Transaction={original_id:number|null;replacement_id:number|null;status:'confirmed'|'voided';void_reason:string|null;voided_at:string|null;id:number;purchase_date:string;supplier:string;purchase_type:string;description:string;cents:number;allocations:{budget_id:number;program:string;funding:string;kind:string;academic_year:string;cents:number}[]};
 export type Dashboard={funding:{kind:string;received:number;expected:number;spent:number}[];programs:{program_code:string;allocated:number;spent:number}[]};
 export type Api=<T>(path:string,method?:string,body?:unknown,format?:'blob')=>Promise<T>;
 export function makeApi(user:string,password:string):Api {
@@ -30,3 +30,5 @@ export async function downloadReport(api:Api,path:string) {
  const url=URL.createObjectURL(blob);const link=document.createElement('a');
  link.href=url;link.download='asufc-spending.xlsx';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+
+export type FundingReceipt={id:number;funding_id:number;cents:number;received_on:string|null;recorded_at:string;actor:string};
