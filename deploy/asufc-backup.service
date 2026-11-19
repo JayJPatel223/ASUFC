@@ -2,6 +2,7 @@
 Description=ASUFC encrypted database backup
 Requires=docker.service
 After=docker.service
+OnFailure=asufc-backup-alert.service
 
 [Service]
 Type=oneshot

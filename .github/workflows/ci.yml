@@ -139,3 +139,69 @@ jobs:
           test "$(docker exec "$cid" psql -U asufc -d asufc_encrypted_restore_test -Atc 'SELECT count(*) FROM staff_session')" = 0
           bash -n scripts/backup-encrypted.sh scripts/restore-encrypted-check.sh
           rm -f /tmp/test.dump /tmp/test.dump.age /tmp/asufc-ci.agekey
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r backend/requirements.txt pip-audit
+      - run: pip-audit
+      - run: npm install
+        working-directory: frontend
+      - run: npm audit --audit-level=high
+        working-directory: frontend
+  backup-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          trap 'rm -rf "$dir"' EXIT
+          if bash scripts/check-backup.sh "$dir"; then exit 1; fi
+          printf 'fictional encrypted archive' > "$dir/test.dump.age"
+          sha256sum "$dir/test.dump.age" > "$dir/test.dump.age.sha256"
+          bash scripts/check-backup.sh "$dir"
+          touch -d '40 hours ago' "$dir/test.dump.age"
+          if bash scripts/check-backup.sh "$dir"; then exit 1; fi
+          touch "$dir/test.dump.age"
+          printf 'corruption' >> "$dir/test.dump.age"
+          if bash scripts/check-backup.sh "$dir"; then exit 1; fi
+  gateway:
+    runs-on: ubuntu-latest
+    env:
+      ASUFC_DOMAIN: localhost
+      POSTGRES_PASSWORD: fictional-ci-db-password
+      STAFF_USER: teststaff
+      STAFF_PASSWORD: fictional-ci-staff-password
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start isolated HTTPS stack
+        run: docker compose -f docker-compose.yml -f docker-compose.production.yml up --build -d
+      - name: Verify gateway headers, redirect and secure session
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if [ "$(curl -ks -o /dev/null -w '%{http_code}' https://localhost/api/funding)" = 401 ]; then break; fi
+            sleep 2
+          done
+          test "$(curl -ks -o /dev/null -w '%{http_code}' https://localhost/api/funding)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost/)" = 308
+          curl -ksD /tmp/asufc-headers -o /dev/null https://localhost/
+          grep -qi '^strict-transport-security:' /tmp/asufc-headers
+          grep -qi '^content-security-policy:' /tmp/asufc-headers
+          grep -qi '^x-frame-options: DENY' /tmp/asufc-headers
+          curl -ksSf -c /tmp/asufc-cookie -D /tmp/asufc-login -H 'X-ASUFC-Request: 1' -H 'Content-Type: application/json' -d '{"username":"teststaff","password":"fictional-ci-staff-password"}' https://localhost/api/auth/login
+          grep -qi '^set-cookie:.*secure' /tmp/asufc-login
+          grep -qi '^set-cookie:.*httponly' /tmp/asufc-login
+          curl -ksSf -b /tmp/asufc-cookie https://localhost/api/funding
+          test "$(curl -ks -b /tmp/asufc-cookie -X POST -o /dev/null -w '%{http_code}' https://localhost/api/auth/logout)" = 403
+          curl -ksSf -b /tmp/asufc-cookie -H 'X-ASUFC-Request: 1' -X POST https://localhost/api/auth/logout
+          test "$(curl -ks -b /tmp/asufc-cookie -o /dev/null -w '%{http_code}' https://localhost/api/funding)" = 401
+      - if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.production.yml down -v

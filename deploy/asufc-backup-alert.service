@@ -1,0 +1,5 @@
+[Unit]
+Description=Log ASUFC backup failure
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger -p daemon.err -t asufc-backup "Backup or freshness check failed; authorized operator must investigate"

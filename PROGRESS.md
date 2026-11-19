@@ -90,3 +90,5 @@ Added restrictive-permission PostgreSQL custom-format backup and non-destructive
 
 ## Infrastructure limitations follow-up
 Previous backup/restore CI passed. Added streaming age encryption and encrypted restore drill, inactive systemd daily schedule template, recovery regression and HTTPS Secure-cookie API test. CI pending. Real host, trust/keys, retention, offsite storage, schedule activation and public TLS remain unapproved; no production changes made.
+
+Added dependency audit CI, backup freshness and corruption monitoring tests, proposed local journal failure-alert units, full browser financial workflow (funding, budget, purchase, reporting, export, reconciliation, void), and isolated localhost HTTPS Caddy gateway smoke test. Gateway test uses curl -k for local test certificates only; production certificate trust not verified. CI pending; actual alert routing and institutional deployment approvals outstanding.
