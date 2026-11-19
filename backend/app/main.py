@@ -218,3 +218,20 @@ def adjust_budget(budget_id: int, change: BudgetChange):
 def audit_history():
     with db() as c:
         return c.execute("SELECT * FROM audit_event ORDER BY id DESC LIMIT 500").fetchall()
+
+@app.get("/reports/spending")
+def spending_report(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None):
+    from .reporting import summarize, validate_period
+    try:
+        validate_period(start,end)
+    except ValueError as e:
+        bad(str(e))
+    query = """SELECT p.id AS purchase_id,p.purchase_date,p.supplier,b.program_code,f.id AS funding_id,f.name AS funding_name,f.kind,a.cents
+    FROM active_allocation a JOIN purchase p ON p.id=a.purchase_id JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s"""
+    params = [year]
+    for value, clause in [(start,"p.purchase_date >= %s"),(end,"p.purchase_date <= %s"),(program,"b.program_code = %s"),(supplier,"lower(p.supplier) = lower(%s)"),(funding_id,"f.id = %s")]:
+        if value is not None:
+            query += " AND " + clause
+            params.append(value)
+    with db() as c:
+        return summarize(c.execute(query,params).fetchall())
