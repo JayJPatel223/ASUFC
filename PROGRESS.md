@@ -98,3 +98,6 @@ CI 44604770221: Python audit clean; npm reported moderate esbuild and high Vite 
 
 ## Pre-AI regression review
 CI 44605369849: dependency audit, backend/frontend, gateway, restore, monitor pass; finance browser failed at Program select locator. Added explicit accessible program label, consistent dashboard/suggestion database snapshots, report year validation and suggestion period boundary check, defusedxml parsing dependency and malformed worksheet handling. Full CI reruns on this commit. No AI integration yet.
+
+## Public Pages demo
+Added isolated compile-time Pages mode, fictional in-memory mock transport and clearly marked demo entry, repository base path, compiled artifact deployment workflow and browser regression. Public demo exercises basic financial flows; backend-only operations are unavailable. Pages source must be switched to GitHub Actions by repository owner. No real data or secrets included. CI and deployment pending.

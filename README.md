@@ -25,3 +25,6 @@ Browser checks: `cd frontend && npx playwright install chromium && npm run test:
 
 ## Backup and recovery
 See [recovery runbook](docs/recovery.md). Create an archive with `bash scripts/backup.sh` and validate it using `bash scripts/restore-check.sh PATH.dump`. Use approved encrypted storage; never commit archives.
+
+## Public GitHub Pages demo
+Set Settings > Pages > Source to GitHub Actions. The dedicated Pages workflow builds with `npm run build:pages`, tests the compiled demo and publishes only frontend/dist. The public demo uses fictional in-memory records and a single Enter public demo button; no real login, API, database, persistence or file processing. Refresh resets all records. Core funding, budgets, purchase, void and reports can be exercised; server-only operations are explicitly unavailable. Never enter real data. Normal local and production builds continue to use the authenticated backend.
