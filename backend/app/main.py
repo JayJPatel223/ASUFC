@@ -219,19 +219,31 @@ def audit_history():
     with db() as c:
         return c.execute("SELECT * FROM audit_event ORDER BY id DESC LIMIT 500").fetchall()
 
-@app.get("/reports/spending")
-def spending_report(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None):
+def report_rows(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
     from .reporting import summarize, validate_period
     try:
         validate_period(start,end)
     except ValueError as e:
         bad(str(e))
-    query = """SELECT p.id AS purchase_id,p.purchase_date,p.supplier,b.program_code,f.id AS funding_id,f.name AS funding_name,f.kind,a.cents
+    query = """SELECT p.id AS purchase_id,p.purchase_date,p.supplier,p.purchase_type,p.description,b.program_code,f.id AS funding_id,f.name AS funding_name,f.kind,a.cents
     FROM active_allocation a JOIN purchase p ON p.id=a.purchase_id JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s"""
     params = [year]
-    for value, clause in [(start,"p.purchase_date >= %s"),(end,"p.purchase_date <= %s"),(program,"b.program_code = %s"),(supplier,"lower(p.supplier) = lower(%s)"),(funding_id,"f.id = %s")]:
+    for value, clause in [(start,"p.purchase_date >= %s"),(end,"p.purchase_date <= %s"),(program,"b.program_code = %s"),(supplier,"lower(p.supplier) = lower(%s)"),(funding_id,"f.id = %s"),(purchase_type,"lower(p.purchase_type) = lower(%s)")]:
         if value is not None:
             query += " AND " + clause
             params.append(value)
     with db() as c:
-        return summarize(c.execute(query,params).fetchall())
+        return c.execute(query + " ORDER BY p.purchase_date,p.id,b.id",params).fetchall()
+
+@app.get("/reports/spending")
+def spending_report(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
+    from .reporting import summarize
+    return summarize(report_rows(year,start,end,program,supplier,funding_id,purchase_type))
+
+@app.get("/reports/spending.xlsx")
+def spending_export(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
+    from fastapi.responses import Response
+    from .export import spending_workbook
+    rows=report_rows(year,start,end,program,supplier,funding_id,purchase_type)
+    content=spending_workbook(rows,{"Academic year":year,"Start":start,"End":end,"Program":program,"Supplier":supplier,"Funding ID":funding_id,"Purchase type":purchase_type})
+    return Response(content,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":'attachment; filename="asufc-spending.xlsx"',"Cache-Control":"no-store"})
