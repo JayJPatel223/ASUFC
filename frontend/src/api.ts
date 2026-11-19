@@ -3,14 +3,14 @@ export type Funding={id:number;name:string;academic_year:string;kind:'cash'|'cre
 export type Budget={id:number;funding_id:number;funding_name:string;program_code:string;academic_year:string;kind:string;cents:number;remaining:number;expiry:string|null};
 export type Transaction={status:'confirmed'|'voided';void_reason:string|null;voided_at:string|null;id:number;purchase_date:string;supplier:string;purchase_type:string;description:string;cents:number;allocations:{budget_id:number;program:string;funding:string;kind:string;academic_year:string;cents:number}[]};
 export type Dashboard={funding:{kind:string;received:number;expected:number;spent:number}[];programs:{program_code:string;allocated:number;spent:number}[]};
-export type Api=<T>(path:string,method?:string,body?:unknown)=>Promise<T>;
+export type Api=<T>(path:string,method?:string,body?:unknown,format?:'blob')=>Promise<T>;
 export function makeApi(user:string,password:string):Api {
  const bytes=new TextEncoder().encode(user+':'+password);
  const credential=btoa(Array.from(bytes,b=>String.fromCharCode(b)).join(''));
- return async <T>(path:string,method='GET',body?:unknown):Promise<T>=>{
+ return async <T>(path:string,method='GET',body?:unknown,format?:'blob'):Promise<T>=>{
   const response=await fetch('/api'+path,{method,headers:{Authorization:'Basic '+credential,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),cache:'no-store'});
   if(!response.ok){const error=await response.json().catch(()=>null);throw new Error(typeof error?.detail==='string'?error.detail:response.status===401?'Invalid staff credentials':'Request failed ('+response.status+')');}
-  return response.json() as Promise<T>;
+  return (format==='blob'?response.blob():response.json()) as Promise<T>;
  };
 }
 export function cents(value:string):number {
@@ -23,3 +23,10 @@ export function cents(value:string):number {
 export const money=(n:number)=>new Intl.NumberFormat('en-CA',{style:'currency',currency:'CAD'}).format(n/100);
 
 export type AuditEvent={id:number;actor:string;action:string;entity:string;entity_id:number;details:unknown;created_at:string};
+
+export async function downloadReport(api:Api,path:string) { 
+ // Use the same authenticated request path, but request a binary response.
+ const blob=await api<Blob>(path,'GET',undefined,'blob');
+ const url=URL.createObjectURL(blob);const link=document.createElement('a');
+ link.href=url;link.download='asufc-spending.xlsx';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
