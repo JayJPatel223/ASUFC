@@ -197,3 +197,17 @@ def test_concurrent_spending_cannot_exceed_budget(client):
         results=list(pool.map(spend,range(2)))
     assert sorted(results)==[201,422]
     assert client.get("/budgets").json()[0]["remaining"]==3000
+
+def test_manual_duplicate_review_and_period_edit(client):
+    create(client,"/academic-years",dict(academic_year="2026-2027",starts_on="2026-09-01",ends_on="2027-08-31"))
+    s=create(client,"/academic-years/2026-2027/semesters",dict(name="Fall",starts_on="2026-09-01",ends_on="2026-12-31"))
+    f=create(client,"/funding",dict(name="Review",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    payload=dict(purchase_date="2026-11-01",supplier="Shop",purchase_type="Groceries",cents=1000,allocations=[dict(budget_id=b["id"],cents=1000)])
+    create(client,"/transactions",payload)
+    assert client.post("/transactions",json=payload).status_code==422
+    create(client,"/transactions",payload|{"duplicate_reason":"Separate receipt reviewed"})
+    url=f"/academic-years/2026-2027/semesters/{s['id']}"
+    assert client.patch(url,json=dict(name="Fall term",starts_on="2026-09-01",ends_on="2026-12-20",reason="Calendar correction")).status_code==200
+    assert client.patch("/academic-years/2026-2027",json=dict(starts_on="2026-10-01",ends_on="2027-08-31",reason="Test")).status_code==422
+    assert client.patch("/academic-years/2026-2027",json=dict(starts_on="2026-08-01",ends_on="2027-08-31",reason="Calendar correction")).status_code==200

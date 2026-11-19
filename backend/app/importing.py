@@ -25,14 +25,14 @@ def parse_workbook(content, sheet, mapping):
         headers=[str(c.value or "").strip() for c in next(it,[])]
         if any(headers.count(v)!=1 for v in mapping.values()): raise ValueError("Mapped headers must exist exactly once")
         indices={k:headers.index(v) for k,v in mapping.items()}
-        rows=[]; errors=[]; seen=set()
+        rows=[]; errors=[]; seen={}
         for n,cells in enumerate(it,2):
             if all(c.value is None for c in cells): continue
             try:
                 if any(cells[i].data_type=="f" for i in indices.values()): raise ValueError("Formulas are not accepted in mapped fields")
                 v={k:cells[i].value for k,i in indices.items()}
                 ident=str(v["external_id"] or "").strip()
-                if not ident or len(ident)>200 or ident in seen: raise ValueError("Missing or duplicate external ID")
+                if not ident or len(ident)>200 : raise ValueError("Missing external ID")
                 d=v["purchase_date"]
                 d=d.date() if isinstance(d,datetime) else d if isinstance(d,date) else date.fromisoformat(str(d))
                 amount=Decimal(str(v["amount"]))*100
@@ -42,8 +42,17 @@ def parse_workbook(content, sheet, mapping):
                 supplier=str(v["supplier"] or "").strip(); kind=str(v["purchase_type"] or "").strip()
                 description=str(v["description"] or "")
                 if not supplier or len(supplier)>200 or not kind or len(kind)>100 or len(description)>1000: raise ValueError("Invalid supplier, type or description")
-                seen.add(ident)
-                rows.append(dict(row=n,external_id=ident,purchase_date=d.isoformat(),supplier=supplier,purchase_type=kind,description=description,cents=int(amount),allocations=[dict(budget_id=int(budget),cents=int(amount))]))
+                record=dict(row=n,external_id=ident,purchase_date=d.isoformat(),supplier=supplier,purchase_type=kind,description=description,cents=int(amount),allocations=[dict(budget_id=int(budget),cents=int(amount))])
+                if ident in seen:
+                    prior=seen[ident]
+                    if any(prior[k]!=record[k] for k in ("purchase_date","supplier","purchase_type","description")): raise ValueError("Repeated ID has inconsistent purchase details")
+                    if any(a["budget_id"]==int(budget) for a in prior["allocations"]): raise ValueError("Duplicate budget allocation for external ID")
+                    if len(prior["allocations"])>=100 or prior["cents"]+int(amount)>10**12: raise ValueError("Split purchase exceeds limits")
+                    prior["cents"]+=int(amount)
+                    prior["allocations"].extend(record["allocations"])
+                else:
+                    seen[ident]=record
+                    rows.append(record)
             except (ValueError,InvalidOperation,TypeError,OverflowError) as e:
                 errors.append(dict(row=n,error=str(e)))
         return dict(rows=rows,errors=errors)

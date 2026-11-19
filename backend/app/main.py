@@ -71,6 +71,7 @@ class Purchase(BaseModel):
     description: str = Field(default="",max_length=1000)
     cents: int = Field(gt=0,le=10**12)
     allocations: list[Split] = Field(min_length=1,max_length=100)
+    duplicate_reason: str = Field(default="",max_length=1000)
 
 def audit(c, action, entity, entity_id, details):
     c.execute('INSERT INTO audit_event(actor,action,entity,entity_id,details) VALUES (%s,%s,%s,%s,%s)',(os.environ.get('STAFF_USER','staff'),action,entity,entity_id,Jsonb(jsonable_encoder(details))))
@@ -148,6 +149,7 @@ def budgets():
 @app.post("/transactions",status_code=201)
 def record(p: Purchase):
     with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663001)")
         return save_purchase(c,p)
 
 
@@ -163,6 +165,7 @@ def save_purchase(c,p):
         if period and not period["starts_on"] <= p.purchase_date <= period["ends_on"]: bad("Purchase date outside configured academic year")
     try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier)
     except ValueError as e: bad(str(e))
+    if c.execute("SELECT 1 FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id WHERE v.purchase_id IS NULL AND p.purchase_date=%s AND lower(trim(p.supplier))=lower(trim(%s)) AND p.cents=%s",(p.purchase_date,p.supplier,p.cents)).fetchone() and not p.duplicate_reason.strip(): bad("Possible duplicate purchase; provide a review reason if legitimate")
     tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s) RETURNING *",p.model_dump()).fetchone()
     for a in p.allocations:
         c.execute("INSERT INTO allocation VALUES (%s,%s,%s)",(tx["id"],a.budget_id,a.cents))
@@ -280,6 +283,7 @@ class Correction(ChangeReason):
 def correct_purchase(purchase_id: int, change: Correction):
     if not change.reason.strip(): bad("Reason required")
     with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663001)")
         original=c.execute("SELECT * FROM purchase WHERE id=%s FOR UPDATE",(purchase_id,)).fetchone()
         if not original: raise HTTPException(404,"Unknown purchase")
         if c.execute("SELECT 1 FROM purchase_void WHERE purchase_id=%s",(purchase_id,)).fetchone(): raise HTTPException(409,"Purchase already voided")
@@ -426,6 +430,7 @@ def parse_import(p):
 def import_rows(c,parsed):
     if parsed["errors"]: bad("Resolve workbook validation errors first")
     if not parsed["rows"]: bad("No transactions to import")
+    c.execute("SELECT pg_advisory_xact_lock(2663001)")
     ids=[a["budget_id"] for r in parsed["rows"] for a in r["allocations"]]
     c.execute("SELECT id FROM funding WHERE id IN (SELECT funding_id FROM budget WHERE id=ANY(%s)) ORDER BY id FOR UPDATE",(ids,)).fetchall()
     result=[]
@@ -487,4 +492,41 @@ def reverse_transfer(transfer_id: int,p: ChangeReason):
         if capacity(c,t["destination_id"])-t["cents"]<max(reserved,spent,0): bad("Destination funds are allocated, spent or transferred onward")
         row=c.execute("INSERT INTO funding_transfer_void(transfer_id,reason,actor) VALUES (%s,%s,%s) RETURNING *",(transfer_id,p.reason.strip(),os.environ.get("STAFF_USER","staff"))).fetchone()
         audit(c,"transfer_reversed","funding",t["source_id"],{"transfer_id":transfer_id,"reason":p.reason.strip()})
+        return row
+
+class PeriodEdit(ChangeReason):
+    starts_on: date
+    ends_on: date
+
+class SemesterEdit(PeriodEdit):
+    name: str = Field(min_length=1,max_length=100)
+
+@app.patch("/academic-years/{year}")
+def edit_academic_year(year: str,p: PeriodEdit):
+    validate_year_label(year)
+    if not p.reason.strip() or p.starts_on>p.ends_on or p.starts_on.year!=int(year[:4]) or p.ends_on.year!=int(year[5:]): bad("Valid dates and reason required")
+    with db() as c:
+        c.execute("LOCK TABLE funding IN EXCLUSIVE MODE")
+        c.execute("LOCK TABLE academic_period IN SHARE ROW EXCLUSIVE MODE")
+        old=c.execute("SELECT * FROM academic_period WHERE academic_year=%s FOR UPDATE",(year,)).fetchone()
+        if not old: raise HTTPException(404,"Unknown academic year")
+        if c.execute("SELECT 1 FROM academic_period WHERE id<>%s AND starts_on<=%s AND ends_on>=%s",(old["id"],p.ends_on,p.starts_on)).fetchone(): bad("Academic years cannot overlap")
+        if c.execute("SELECT 1 FROM semester WHERE period_id=%s AND (starts_on<%s OR ends_on>%s)",(old["id"],p.starts_on,p.ends_on)).fetchone(): bad("Existing semester outside new dates")
+        if c.execute("SELECT 1 FROM purchase p JOIN active_allocation a ON a.purchase_id=p.id JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s AND (p.purchase_date<%s OR p.purchase_date>%s)",(year,p.starts_on,p.ends_on)).fetchone(): bad("Existing purchase outside new dates")
+        if c.execute("SELECT 1 FROM active_funding_transfer t JOIN funding f ON f.id=t.source_id OR f.id=t.destination_id WHERE f.academic_year=%s",(year,)).fetchone(): bad("Reverse active transfers before changing year dates")
+        row=c.execute("UPDATE academic_period SET starts_on=%s,ends_on=%s WHERE id=%s RETURNING *",(p.starts_on,p.ends_on,old["id"])).fetchone()
+        audit(c,"adjusted","academic_year",old["id"],{"before":old,"after":row,"reason":p.reason})
+        return row
+
+@app.patch("/academic-years/{year}/semesters/{semester_id}")
+def edit_semester(year: str,semester_id: int,p: SemesterEdit):
+    with db() as c:
+        period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s FOR UPDATE",(year,)).fetchone()
+        if not period: raise HTTPException(404,"Unknown academic year")
+        old=c.execute("SELECT * FROM semester WHERE id=%s AND period_id=%s",(semester_id,period["id"])).fetchone()
+        if not old: raise HTTPException(404,"Unknown semester")
+        if not p.reason.strip() or not p.name.strip() or not period["starts_on"]<=p.starts_on<=p.ends_on<=period["ends_on"]: bad("Valid semester dates, name and reason required")
+        if c.execute("SELECT 1 FROM semester WHERE period_id=%s AND id<>%s AND (name=%s OR (starts_on<=%s AND ends_on>=%s))",(period["id"],semester_id,p.name.strip(),p.ends_on,p.starts_on)).fetchone(): bad("Duplicate or overlapping semester")
+        row=c.execute("UPDATE semester SET name=%s,starts_on=%s,ends_on=%s WHERE id=%s RETURNING *",(p.name.strip(),p.starts_on,p.ends_on,semester_id)).fetchone()
+        audit(c,"adjusted","semester",semester_id,{"before":old,"after":row,"reason":p.reason})
         return row
