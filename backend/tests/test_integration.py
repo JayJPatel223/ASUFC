@@ -11,7 +11,7 @@ def client():
     assert os.environ["PGDATABASE"] == "asufc_test"
     with TestClient(app) as client:
         with db() as conn:
-            conn.execute("TRUNCATE semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE funding_transfer,semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
         client.auth=(os.environ["STAFF_USER"],os.environ["STAFF_PASSWORD"])
         yield client
 
@@ -103,3 +103,26 @@ def test_academic_period_configuration(client):
     payload=dict(purchase_date="2026-08-31",supplier="Test",purchase_type="Groceries",cents=1000,allocations=[dict(budget_id=b["id"],cents=1000)])
     assert client.post("/transactions",json=payload).status_code==422
     create(client,"/transactions",payload|{"purchase_date":"2026-09-01"})
+
+def test_carry_forward_conservation(client):
+    for y,start,end in [("2026-2027","2026-09-01","2027-08-31"),("2027-2028","2027-09-01","2028-08-31")]:
+        create(client,"/academic-years",dict(academic_year=y,starts_on=start,ends_on=end))
+    f=create(client,"/funding",dict(name="Carry grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000,eligible_supplier="Test"))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=80000))
+    url=f"/funding/{f['id']}/carry-forward"
+    payload=dict(destination_year="2027-2028",cents=30000,reason="Approved carry")
+    assert client.post(url,json=payload).status_code==422
+    assert client.patch(f"/funding/{f['id']}/carry-permission",json=dict(eligible=True,reason="Grant permits")).status_code==200
+    assert client.post(url,json=payload).status_code==422
+    assert client.patch(f"/budgets/{b['id']}",json=dict(cents=0,reason="Release")).status_code==200
+    t=create(client,url,payload)
+    rows={r["id"]:r for r in client.get("/funding").json()}
+    assert rows[f["id"]]["remaining_cents"]==70000
+    dest=rows[t["destination_id"]]
+    assert dest["remaining_cents"]==30000 and dest["received_cents"]==0
+    assert dest["eligible_supplier"]=="Test"
+    assert client.get(f"/funding/{dest['id']}/receipts").json()==[]
+    assert client.get("/dashboard",params={"year":"2027-2028"}).json()["funding"][0]["carried_in"]==30000
+    assert client.post(url,json=payload|{"cents":70001}).status_code==422
+    create(client,"/budgets",dict(funding_id=dest["id"],program_code="ASUFCGR",cents=30000))
+    assert len(client.get("/funding-transfers").json())==1

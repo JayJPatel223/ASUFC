@@ -87,3 +87,23 @@ CREATE TABLE IF NOT EXISTS semester (
  CHECK(starts_on <= ends_on),
  UNIQUE(period_id,name)
 );
+
+ALTER TABLE funding ADD COLUMN IF NOT EXISTS carry_eligible boolean NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS funding_transfer (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ source_id bigint NOT NULL REFERENCES funding(id),
+ destination_id bigint UNIQUE NOT NULL REFERENCES funding(id),
+ cents bigint NOT NULL CHECK(cents>0),
+ reason text NOT NULL CHECK(length(trim(reason))>0),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ CHECK(source_id<>destination_id)
+);
+CREATE OR REPLACE VIEW funding_capacity AS
+ SELECT f.*, COALESCE(i.cents,0) AS carried_in_cents, COALESCE(o.cents,0) AS carried_out_cents,
+ f.received_cents + COALESCE(i.cents,0)-COALESCE(o.cents,0) AS capacity_cents
+ FROM funding f
+ LEFT JOIN (SELECT destination_id,sum(cents) AS cents FROM funding_transfer GROUP BY destination_id) i ON i.destination_id=f.id
+ LEFT JOIN (SELECT source_id,sum(cents) AS cents FROM funding_transfer GROUP BY source_id) o ON o.source_id=f.id;
+
+ALTER TABLE budget DROP CONSTRAINT IF EXISTS budget_cents_check;
+ALTER TABLE budget ADD CONSTRAINT budget_cents_check CHECK(cents >= 0);

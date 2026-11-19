@@ -54,3 +54,6 @@ Added React/TypeScript/Vite interface with local in-memory credentials, live API
 Added configurable consecutive academic years and non-overlapping semesters; purchase dates validated when a year has been configured. Legacy unconfigured year buckets still supported until dates are confirmed. No assumed Acadia dates seeded. New integration test added; CI pending. Carry-forward remains outstanding.
 
 Academic period configuration UI, year selector and semester report presets added. CI pending. Year configuration is creation-only; edits and funding rollover require separate safeguarded workflows.
+
+## Funding carry-forward backend
+Separate transfer records preserve new receipts vs transferred balances. Only explicitly permitted grants can transfer unallocated capacity to the configured next academic year; expiry and existing restrictions preserved, no new receipt, destination eligibility defaults false. Zero-spend budgets can be reduced to zero. Transfer timing policy (pre-year planning allowed) needs stakeholder confirmation. Frontend and CI verification pending.

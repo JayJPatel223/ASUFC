@@ -46,6 +46,7 @@ class Funding(BaseModel):
     organization: str = Field(default="",max_length=200)
     source_type: str = Field(default="",max_length=100)
     recurring: bool = False
+    carry_eligible: bool = False
     expected_date: date | None = None
     notes: str = Field(default="",max_length=2000)
     received_on: date | None = None
@@ -94,8 +95,8 @@ def add_funding(f: Funding):
     with db() as c:
         validate_year_label(f.academic_year)
         if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
-        created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes)
-         VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s) RETURNING *""",f.model_dump()).fetchone()
+        created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes,carry_eligible)
+         VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s,%(carry_eligible)s) RETURNING *""",f.model_dump()).fetchone()
         if f.received_cents:
             add_receipt(c,created["id"],f.received_cents,f.received_on)
         audit(c,"created","funding",created["id"],created)
@@ -116,8 +117,8 @@ def confirm_funding(funding_id: int, r: Receipt):
 @app.get("/funding")
 def funding():
     with db() as c:
-        return c.execute("""SELECT f.*, received_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
-        received_cents-COALESCE((SELECT sum(b.cents) FROM budget b WHERE b.funding_id=f.id),0) AS unallocated_cents FROM funding f ORDER BY id""").fetchall()
+        return c.execute("""SELECT f.*, capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
+        capacity_cents-COALESCE((SELECT sum(b.cents) FROM budget b WHERE b.funding_id=f.id),0) AS unallocated_cents FROM funding_capacity f ORDER BY id""").fetchall()
 
 @app.post("/budgets",status_code=201)
 def add_budget(b: Budget):
@@ -128,7 +129,7 @@ def add_budget(b: Budget):
         if f["eligible_program"] and f["eligible_program"] != b.program_code: bad("Program not eligible")
         if f["expiry"] and f["expiry"] < date.today(): bad("Funding expired")
         used=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(b.funding_id,)).fetchone()["n"]
-        if used+b.cents>f["received_cents"]: bad("Insufficient unallocated confirmed funding")
+        if used+b.cents>capacity(c,f["id"]): bad("Insufficient unallocated confirmed funding")
         if c.execute("SELECT 1 FROM budget WHERE funding_id=%s AND program_code=%s",(b.funding_id,b.program_code)).fetchone(): bad("Budget already exists")
         created=c.execute("INSERT INTO budget(funding_id,program_code,cents) VALUES (%(funding_id)s,%(program_code)s,%(cents)s) RETURNING *",b.model_dump()).fetchone()
         audit(c,"created","budget",created["id"],created)
@@ -136,8 +137,8 @@ def add_budget(b: Budget):
 
 BUDGET_QUERY="""SELECT b.*, f.name AS funding_name,f.kind,f.academic_year,f.expiry,f.eligible_program,f.eligible_supplier,
  b.cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0) AS remaining,
- f.received_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget bb ON bb.id=a.budget_id WHERE bb.funding_id=f.id),0) AS fund_remaining
- FROM budget b JOIN funding f ON f.id=b.funding_id"""
+ f.capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget bb ON bb.id=a.budget_id WHERE bb.funding_id=f.id),0) AS fund_remaining
+ FROM budget b JOIN funding_capacity f ON f.id=b.funding_id"""
 
 @app.get("/budgets")
 def budgets():
@@ -177,9 +178,9 @@ def transactions():
 @app.get("/dashboard")
 def dashboard(year: str = "2026-2027"):
     with db() as c:
-        return {"funding":c.execute("""SELECT kind, sum(received_cents) AS received, sum(expected_cents-received_cents) AS expected,
+        return {"funding":c.execute("""SELECT kind, sum(received_cents) AS received, sum(expected_cents-received_cents) AS expected, sum(carried_in_cents) AS carried_in, sum(carried_out_cents) AS carried_out, sum(capacity_cents) AS capacity,
         sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0)) AS spent
-        FROM funding f WHERE academic_year=%s GROUP BY kind""",(year,)).fetchall(),
+        FROM funding_capacity f WHERE academic_year=%s GROUP BY kind""",(year,)).fetchall(),
         "programs":c.execute("""SELECT b.program_code, sum(b.cents) AS allocated,
         sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0)) AS spent FROM budget b JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s GROUP BY b.program_code""",(year,)).fetchall()}
 
@@ -206,7 +207,7 @@ class ChangeReason(BaseModel):
     reason: str = Field(min_length=1,max_length=1000)
 
 class BudgetChange(ChangeReason):
-    cents: int = Field(gt=0,le=10**12)
+    cents: int = Field(ge=0,le=10**12)
 
 @app.post("/transactions/{purchase_id}/void")
 def void_purchase(purchase_id: int, change: ChangeReason):
@@ -232,7 +233,7 @@ def adjust_budget(budget_id: int, change: BudgetChange):
         spent=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM active_allocation WHERE budget_id=%s",(budget_id,)).fetchone()["n"]
         other=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s AND id<>%s",(f["id"],budget_id)).fetchone()["n"]
         if change.cents < spent: bad("Budget cannot be less than confirmed spending")
-        if change.cents+other > f["received_cents"]: bad("Insufficient confirmed funding")
+        if change.cents+other > capacity(c,f["id"]): bad("Insufficient confirmed funding")
         if change.cents>b["cents"] and f["expiry"] and f["expiry"]<date.today(): bad("Funding expired")
         result=c.execute("UPDATE budget SET cents=%s WHERE id=%s RETURNING *",(change.cents,budget_id)).fetchone()
         audit(c,"adjusted","budget",budget_id,{"before":b["cents"],"after":change.cents,"reason":change.reason.strip()})
@@ -342,3 +343,50 @@ def create_semester(year: str,p: SemesterPeriod):
         row=c.execute("INSERT INTO semester(period_id,name,starts_on,ends_on) VALUES (%s,%s,%s,%s) RETURNING *",(period["id"],p.name.strip(),p.starts_on,p.ends_on)).fetchone()
         audit(c,"created","semester",row["id"],row)
         return row
+
+def capacity(c,funding_id):
+    return c.execute("SELECT capacity_cents FROM funding_capacity WHERE id=%s",(funding_id,)).fetchone()["capacity_cents"]
+
+class CarryPermission(ChangeReason):
+    eligible: bool
+
+class CarryTransfer(ChangeReason):
+    destination_year: str
+    cents: int = Field(gt=0,le=10**12)
+
+@app.patch("/funding/{funding_id}/carry-permission")
+def carry_permission(funding_id: int,p: CarryPermission):
+    if not p.reason.strip(): bad("Reason required")
+    with db() as c:
+        old=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
+        if not old: raise HTTPException(404,"Unknown funding")
+        row=c.execute("UPDATE funding SET carry_eligible=%s WHERE id=%s RETURNING *",(p.eligible,funding_id)).fetchone()
+        audit(c,"carry_permission_changed","funding",funding_id,{"before":old["carry_eligible"],"after":p.eligible,"reason":p.reason.strip()})
+        return row
+
+@app.post("/funding/{funding_id}/carry-forward",status_code=201)
+def carry_forward(funding_id: int,p: CarryTransfer):
+    if not p.reason.strip(): bad("Reason required")
+    validate_year_label(p.destination_year)
+    with db() as c:
+        source=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
+        if not source: raise HTTPException(404,"Unknown funding")
+        if not source["carry_eligible"]: bad("Grant carry-forward permission not confirmed")
+        src=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(source["academic_year"],)).fetchone()
+        dst=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(p.destination_year,)).fetchone()
+        if not src or not dst: bad("Configure both academic years first")
+        if int(p.destination_year[:4])!=int(source["academic_year"][:4])+1 or dst["starts_on"]<=src["ends_on"]: bad("Destination must be the next academic year")
+        if source["expiry"] and source["expiry"]<max(dst["starts_on"],date.today()): bad("Funding expires before transfer can be used")
+        reserved=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(funding_id,)).fetchone()["n"]
+        if p.cents>capacity(c,funding_id)-reserved: bad("Release unused budget allocations before transferring")
+        # A transfer creates a new funding bucket with no new award or receipt.
+        dest=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,notes,carry_eligible)
+        VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,false,%s,false) RETURNING *""",(source["name"],p.destination_year,source["kind"],source["expiry"],source["eligible_program"],source["eligible_supplier"],source["organization"],source["source_type"],source["notes"])).fetchone()
+        transfer=c.execute("INSERT INTO funding_transfer(source_id,destination_id,cents,reason) VALUES (%s,%s,%s,%s) RETURNING *",(funding_id,dest["id"],p.cents,p.reason.strip())).fetchone()
+        audit(c,"carried_forward","funding",funding_id,transfer)
+        return transfer
+
+@app.get("/funding-transfers")
+def funding_transfers():
+    with db() as c:
+        return c.execute("SELECT t.*,s.academic_year AS source_year,d.academic_year AS destination_year,s.name AS funding_name,s.kind FROM funding_transfer t JOIN funding s ON s.id=t.source_id JOIN funding d ON d.id=t.destination_id ORDER BY t.id DESC").fetchall()
