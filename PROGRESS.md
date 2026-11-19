@@ -57,3 +57,5 @@ Academic period configuration UI, year selector and semester report presets adde
 
 ## Funding carry-forward backend
 Separate transfer records preserve new receipts vs transferred balances. Only explicitly permitted grants can transfer unallocated capacity to the configured next academic year; expiry and existing restrictions preserved, no new receipt, destination eligibility defaults false. Zero-spend budgets can be reduced to zero. Transfer timing policy (pre-year planning allowed) needs stakeholder confirmation. Frontend and CI verification pending.
+
+Carry-forward permission and transfer forms, transfer history, separate carried-in/out dashboard metrics, and capacity-based balances connected to frontend. CI pending. Transfers are not reversible through the UI yet; stakeholder timing and permissions require confirmation.
