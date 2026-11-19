@@ -112,3 +112,18 @@ CREATE TABLE IF NOT EXISTS import_entry (
  external_id text PRIMARY KEY,
  purchase_id bigint UNIQUE NOT NULL REFERENCES purchase(id)
 );
+
+CREATE TABLE IF NOT EXISTS funding_transfer_void (
+ transfer_id bigint PRIMARY KEY REFERENCES funding_transfer(id),
+ reason text NOT NULL CHECK(length(trim(reason))>0),
+ actor text NOT NULL,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE VIEW active_funding_transfer AS
+ SELECT t.* FROM funding_transfer t LEFT JOIN funding_transfer_void v ON v.transfer_id=t.id WHERE v.transfer_id IS NULL;
+CREATE OR REPLACE VIEW funding_capacity AS
+ SELECT f.*, COALESCE(i.cents,0) AS carried_in_cents, COALESCE(o.cents,0) AS carried_out_cents,
+ f.received_cents + COALESCE(i.cents,0)-COALESCE(o.cents,0) AS capacity_cents
+ FROM funding f
+ LEFT JOIN (SELECT destination_id,sum(cents) AS cents FROM active_funding_transfer GROUP BY destination_id) i ON i.destination_id=f.id
+ LEFT JOIN (SELECT source_id,sum(cents) AS cents FROM active_funding_transfer GROUP BY source_id) o ON o.source_id=f.id;

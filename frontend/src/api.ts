@@ -35,4 +35,4 @@ export type FundingReceipt={id:number;funding_id:number;cents:number;received_on
 
 export type AcademicPeriod={id:number;academic_year:string;starts_on:string;ends_on:string;semesters:{id:number;name:string;starts_on:string;ends_on:string}[]};
 
-export type FundingTransfer={id:number;source_id:number;destination_id:number;cents:number;reason:string;source_year:string;destination_year:string;funding_name:string;kind:string;created_at:string};
+export type FundingTransfer={reversed:boolean;reversal_reason:string|null;id:number;source_id:number;destination_id:number;cents:number;reason:string;source_year:string;destination_year:string;funding_name:string;kind:string;created_at:string};

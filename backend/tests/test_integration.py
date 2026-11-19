@@ -169,3 +169,31 @@ def test_excel_import_atomic_and_duplicate(client):
     assert create(client,"/imports/commit",payload(200))["imported"]==2
     assert client.post("/imports/commit",json=payload(200)).status_code==422
     assert len(client.get("/transactions").json())==2
+
+def test_carry_forward_reversal(client):
+    for y,start,end in [("2026-2027","2026-09-01","2027-08-31"),("2027-2028","2027-09-01","2028-08-31")]:
+        create(client,"/academic-years",dict(academic_year=y,starts_on=start,ends_on=end))
+    f=create(client,"/funding",dict(name="Carry",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000,carry_eligible=True))
+    t=create(client,f"/funding/{f['id']}/carry-forward",dict(destination_year="2027-2028",cents=25000,reason="Approved"))
+    b=create(client,"/budgets",dict(funding_id=t["destination_id"],program_code="ASUFCGR",cents=25000))
+    url=f"/funding-transfers/{t['id']}/reverse"
+    assert client.post(url,json={"reason":"Correction"}).status_code==422
+    assert client.patch(f"/budgets/{b['id']}",json={"cents":0,"reason":"Release"}).status_code==200
+    assert client.post(url,json={"reason":"Correction"}).status_code==200
+    assert client.post(url,json={"reason":"Again"}).status_code==409
+    rows={r["id"]:r for r in client.get("/funding").json()}
+    assert rows[f["id"]]["remaining_cents"]==100000
+    assert rows[t["destination_id"]]["remaining_cents"]==0
+    assert client.get("/funding-transfers").json()[0]["reversed"]
+    assert client.get("/reports/reconciliation").json()["ok"]
+
+def test_concurrent_spending_cannot_exceed_budget(client):
+    from concurrent.futures import ThreadPoolExecutor
+    f=create(client,"/funding",dict(name="Concurrent",academic_year="2026-2027",kind="cash",expected_cents=10000,received_cents=10000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=10000))
+    def spend(i):
+        return client.post("/transactions",json=dict(purchase_date="2026-11-01",supplier=f"Supplier {i}",purchase_type="Groceries",cents=7000,allocations=[dict(budget_id=b["id"],cents=7000)])).status_code
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results=list(pool.map(spend,range(2)))
+    assert sorted(results)==[201,422]
+    assert client.get("/budgets").json()[0]["remaining"]==3000

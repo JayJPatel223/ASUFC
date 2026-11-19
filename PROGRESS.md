@@ -67,3 +67,5 @@ Added reconciliation workbook export with funding, budget and issue worksheets, 
 
 ## Excel migration and custom programs
 Added bounded XLSX parsing, explicit seven-column mapping, formula rejection, transaction-path preview with rollback, atomic import and stable external ID deduplication. Conservative date/supplier/amount collision blocks potential duplicate imports. Single-budget rows only; split historical purchases require manual entry. Custom program creation added. Actual ASUFC workbook not supplied; mapping and historical expiry policy require confirmation. CI pending.
+
+Added audited transfer reversals (blocked if destination capacity would fall below allocations/spending), active-transfer accounting and frontend reversal form. Added PostgreSQL reversal and concurrent overspending regressions. CI pending.

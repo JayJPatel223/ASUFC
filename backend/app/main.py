@@ -389,7 +389,7 @@ def carry_forward(funding_id: int,p: CarryTransfer):
 @app.get("/funding-transfers")
 def funding_transfers():
     with db() as c:
-        return c.execute("SELECT t.*,s.academic_year AS source_year,d.academic_year AS destination_year,s.name AS funding_name,s.kind FROM funding_transfer t JOIN funding s ON s.id=t.source_id JOIN funding d ON d.id=t.destination_id ORDER BY t.id DESC").fetchall()
+        return c.execute("SELECT t.*,s.academic_year AS source_year,d.academic_year AS destination_year,s.name AS funding_name,s.kind,v.transfer_id IS NOT NULL AS reversed,v.reason AS reversal_reason FROM funding_transfer t JOIN funding s ON s.id=t.source_id JOIN funding d ON d.id=t.destination_id LEFT JOIN funding_transfer_void v ON v.transfer_id=t.id ORDER BY t.id DESC").fetchall()
 
 @app.get("/reports/reconciliation")
 def reconciliation_report(year: str = "2026-2027"):
@@ -402,7 +402,7 @@ def reconciliation_report(year: str = "2026-2027"):
         purchases=c.execute("SELECT p.*, v.purchase_id IS NOT NULL AS voided FROM purchase p LEFT JOIN purchase_void v ON v.purchase_id=p.id").fetchall()
         allocations=c.execute("SELECT * FROM allocation").fetchall()
         receipts=c.execute("SELECT * FROM funding_receipt").fetchall()
-        transfers=c.execute("SELECT * FROM funding_transfer").fetchall()
+        transfers=c.execute("SELECT * FROM active_funding_transfer").fetchall()
         return reconcile(funds,budgets,purchases,allocations,receipts,transfers,year)
 
 @app.get("/reports/reconciliation.xlsx")
@@ -472,4 +472,19 @@ def create_program(p: NewProgram):
     with db() as c:
         row=c.execute("INSERT INTO program(code,name) VALUES (%s,%s) ON CONFLICT DO NOTHING RETURNING *",(p.code,p.name.strip())).fetchone()
         if not row: raise HTTPException(409,"Program code already exists")
+        return row
+
+@app.post("/funding-transfers/{transfer_id}/reverse")
+def reverse_transfer(transfer_id: int,p: ChangeReason):
+    if not p.reason.strip(): bad("Reason required")
+    with db() as c:
+        t=c.execute("SELECT * FROM funding_transfer WHERE id=%s FOR UPDATE",(transfer_id,)).fetchone()
+        if not t: raise HTTPException(404,"Unknown transfer")
+        c.execute("SELECT id FROM funding WHERE id=ANY(%s) ORDER BY id FOR UPDATE",([t["source_id"],t["destination_id"]],)).fetchall()
+        if c.execute("SELECT 1 FROM funding_transfer_void WHERE transfer_id=%s",(transfer_id,)).fetchone(): raise HTTPException(409,"Transfer already reversed")
+        reserved=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(t["destination_id"],)).fetchone()["n"]
+        spent=c.execute("SELECT COALESCE(sum(a.cents),0) AS n FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=%s",(t["destination_id"],)).fetchone()["n"]
+        if capacity(c,t["destination_id"])-t["cents"]<max(reserved,spent,0): bad("Destination funds are allocated, spent or transferred onward")
+        row=c.execute("INSERT INTO funding_transfer_void(transfer_id,reason,actor) VALUES (%s,%s,%s) RETURNING *",(transfer_id,p.reason.strip(),os.environ.get("STAFF_USER","staff"))).fetchone()
+        audit(c,"transfer_reversed","funding",t["source_id"],{"transfer_id":transfer_id,"reason":p.reason.strip()})
         return row
