@@ -11,7 +11,7 @@ def client():
     assert os.environ["PGDATABASE"] == "asufc_test"
     with TestClient(app) as client:
         with db() as conn:
-            conn.execute("TRUNCATE purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
+            conn.execute("TRUNCATE semester,academic_period,purchase_correction,funding_receipt,audit_event,purchase_void,allocation,purchase,budget,funding RESTART IDENTITY CASCADE")
         client.auth=(os.environ["STAFF_USER"],os.environ["STAFF_PASSWORD"])
         yield client
 
@@ -91,3 +91,15 @@ def test_atomic_correction_and_receipt_history(client):
     assert history[1]["replacement_id"]==replacement["id"]
     assert client.get("/dashboard").json()["funding"][0]["spent"]==30000
     assert client.post(url,json={"reason":"Again","replacement":valid}).status_code==409
+
+def test_academic_period_configuration(client):
+    year=create(client,"/academic-years",dict(academic_year="2026-2027",starts_on="2026-09-01",ends_on="2027-08-31"))
+    create(client,"/academic-years/2026-2027/semesters",dict(name="Fall",starts_on="2026-09-01",ends_on="2026-12-31"))
+    assert client.post("/academic-years/2026-2027/semesters",json=dict(name="Overlap",starts_on="2026-11-01",ends_on="2027-01-01")).status_code==422
+    assert client.post("/academic-years",json=dict(academic_year="2027-2028",starts_on="2027-08-01",ends_on="2028-08-31")).status_code==422
+    assert client.get("/academic-years").json()[0]["semesters"][0]["name"]=="Fall"
+    f=create(client,"/funding",dict(name="Test",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
+    b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
+    payload=dict(purchase_date="2026-08-31",supplier="Test",purchase_type="Groceries",cents=1000,allocations=[dict(budget_id=b["id"],cents=1000)])
+    assert client.post("/transactions",json=payload).status_code==422
+    create(client,"/transactions",payload|{"purchase_date":"2026-09-01"})

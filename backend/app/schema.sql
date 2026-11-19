@@ -70,3 +70,20 @@ CREATE TABLE IF NOT EXISTS funding_receipt (
 INSERT INTO funding_receipt(funding_id,cents,actor)
  SELECT f.id,f.received_cents,'legacy opening balance' FROM funding f
  WHERE f.received_cents>0 AND NOT EXISTS (SELECT 1 FROM funding_receipt r WHERE r.funding_id=f.id);
+
+CREATE TABLE IF NOT EXISTS academic_period (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ academic_year text UNIQUE NOT NULL,
+ starts_on date NOT NULL,
+ ends_on date NOT NULL,
+ CHECK(starts_on <= ends_on)
+);
+CREATE TABLE IF NOT EXISTS semester (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_id bigint NOT NULL REFERENCES academic_period(id),
+ name text NOT NULL,
+ starts_on date NOT NULL,
+ ends_on date NOT NULL,
+ CHECK(starts_on <= ends_on),
+ UNIQUE(period_id,name)
+);

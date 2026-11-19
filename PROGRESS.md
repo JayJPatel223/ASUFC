@@ -49,3 +49,6 @@ Added React/TypeScript/Vite interface with local in-memory credentials, live API
 
 ## Linked corrections and grant receipts
 - Atomic correction endpoint, rollback on invalid replacement, original/replacement linkage and receipt history. Added grant organization, classification, recurrence, expected date, notes. Frontend correction and receipt views added. CI verification pending for this commit; further restriction and year management work remains.
+
+## Academic period configuration
+Added configurable consecutive academic years and non-overlapping semesters; purchase dates validated when a year has been configured. Legacy unconfigured year buckets still supported until dates are confirmed. No assumed Acadia dates seeded. New integration test added; CI pending. Carry-forward remains outstanding.

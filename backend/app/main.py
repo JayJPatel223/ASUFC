@@ -92,6 +92,7 @@ def programs():
 def add_funding(f: Funding):
     if f.received_cents > f.expected_cents: bad("Received exceeds award")
     with db() as c:
+        validate_year_label(f.academic_year)
         if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
         created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes)
          VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s) RETURNING *""",f.model_dump()).fetchone()
@@ -156,6 +157,9 @@ def save_purchase(c,p):
     rows={r["id"]:r for r in c.execute(BUDGET_QUERY+" WHERE b.id=ANY(%s)",(ids,)).fetchall()}
     if any(i not in rows for i in ids): bad("Unknown budget")
     splits=[{**rows[a.budget_id],**a.model_dump()} for a in p.allocations]
+    for year in {a["academic_year"] for a in splits}:
+        period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(year,)).fetchone()
+        if period and not period["starts_on"] <= p.purchase_date <= period["ends_on"]: bad("Purchase date outside configured academic year")
     try: validate_purchase(p.cents,splits,p.purchase_date,p.supplier)
     except ValueError as e: bad(str(e))
     tx=c.execute("INSERT INTO purchase(purchase_date,supplier,purchase_type,description,cents) VALUES (%(purchase_date)s,%(supplier)s,%(purchase_type)s,%(description)s,%(cents)s) RETURNING *",p.model_dump()).fetchone()
@@ -295,3 +299,46 @@ def receipts(funding_id: int):
     with db() as c:
         if not c.execute("SELECT 1 FROM funding WHERE id=%s",(funding_id,)).fetchone(): raise HTTPException(404,"Unknown funding")
         return c.execute("SELECT * FROM funding_receipt WHERE funding_id=%s ORDER BY id",(funding_id,)).fetchall()
+
+def validate_year_label(year):
+    if len(year)!=9 or year[4]!="-" or not year[:4].isdigit() or not year[5:].isdigit() or int(year[5:])!=int(year[:4])+1:
+        bad("Academic year must contain consecutive years, e.g. 2026-2027")
+
+class AcademicPeriod(BaseModel):
+    academic_year: str
+    starts_on: date
+    ends_on: date
+
+class SemesterPeriod(BaseModel):
+    name: str = Field(min_length=1,max_length=100)
+    starts_on: date
+    ends_on: date
+
+@app.get("/academic-years")
+def academic_years():
+    with db() as c:
+        return c.execute("SELECT p.*, COALESCE((SELECT json_agg(s ORDER BY s.starts_on) FROM semester s WHERE s.period_id=p.id),'[]'::json) AS semesters FROM academic_period p ORDER BY starts_on").fetchall()
+
+@app.post("/academic-years",status_code=201)
+def create_academic_year(p: AcademicPeriod):
+    validate_year_label(p.academic_year)
+    if p.starts_on>p.ends_on or p.starts_on.year!=int(p.academic_year[:4]) or p.ends_on.year!=int(p.academic_year[5:]): bad("Dates must be ordered and match academic year")
+    with db() as c:
+        c.execute("LOCK TABLE funding IN EXCLUSIVE MODE")
+        c.execute("LOCK TABLE academic_period IN SHARE ROW EXCLUSIVE MODE")
+        if c.execute("SELECT 1 FROM academic_period WHERE starts_on<=%s AND ends_on>=%s",(p.ends_on,p.starts_on)).fetchone(): bad("Academic years cannot overlap")
+        if c.execute("SELECT 1 FROM purchase p JOIN active_allocation a ON a.purchase_id=p.id JOIN budget b ON b.id=a.budget_id JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s AND (p.purchase_date<%s OR p.purchase_date>%s)",(p.academic_year,p.starts_on,p.ends_on)).fetchone(): bad("Existing purchases fall outside these dates")
+        row=c.execute("INSERT INTO academic_period(academic_year,starts_on,ends_on) VALUES (%(academic_year)s,%(starts_on)s,%(ends_on)s) RETURNING *",p.model_dump()).fetchone()
+        audit(c,"created","academic_year",row["id"],row)
+        return row
+
+@app.post("/academic-years/{year}/semesters",status_code=201)
+def create_semester(year: str,p: SemesterPeriod):
+    with db() as c:
+        period=c.execute("SELECT * FROM academic_period WHERE academic_year=%s FOR UPDATE",(year,)).fetchone()
+        if not period: raise HTTPException(404,"Unknown academic year")
+        if not p.name.strip() or not period["starts_on"]<=p.starts_on<=p.ends_on<=period["ends_on"]: bad("Semester dates must fit academic year")
+        if c.execute("SELECT 1 FROM semester WHERE period_id=%s AND (name=%s OR (starts_on<=%s AND ends_on>=%s))",(period["id"],p.name.strip(),p.ends_on,p.starts_on)).fetchone(): bad("Duplicate or overlapping semester")
+        row=c.execute("INSERT INTO semester(period_id,name,starts_on,ends_on) VALUES (%s,%s,%s,%s) RETURNING *",(period["id"],p.name.strip(),p.starts_on,p.ends_on)).fetchone()
+        audit(c,"created","semester",row["id"],row)
+        return row
