@@ -16,6 +16,7 @@ from .credentials import hash_password,verify_password,validate_password
 from pydantic import BaseModel, Field
 from .rules import restriction_allows, spending_restriction, validate_purchase
 from .suggestions import suggest_allocations
+from .receipt_files import register_receipts
 
 def db():
     return psycopg.connect(row_factory=dict_row)
@@ -810,4 +811,5 @@ def change_password(p: PasswordChange, request: Request, response: Response):
     response.delete_cookie(COOKIE,path="/",secure=os.getenv("SESSION_SECURE","1")!="0",httponly=True,samesite="strict")
     return {"ok":True}
 
+register_receipts(router, db, audit, staff)
 app.include_router(router)

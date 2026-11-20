@@ -10,16 +10,21 @@ import subprocess
 import sys
 import threading
 from contextlib import asynccontextmanager, contextmanager
+from datetime import date
+from tempfile import TemporaryFile
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 import psycopg
-from psycopg.conninfo import make_conninfo
+from pydantic import BaseModel, Field
+from starlette.responses import StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.staticfiles import StaticFiles
 import uvicorn
 
 from .credentials import validate_password
-from .main import app
+from .desktop_backup import BLOCK, BackupError, restore_backup, write_backup
+from .main import app, db, safe_validation_error, staff
 
 
 def announce(status, **details):
@@ -98,20 +103,16 @@ def local_database(state_dir, bin_dir):
             if key.upper().startswith("PG"):
                 del os.environ[key]
         os.environ.update(settings)
-        yield settings
+        yield
     finally:
         postgres_tool(bin_dir, "pg_ctl", "-D", database_dir, "-m", "fast", "-w", "-t", "25", "stop")
 
 
-def prepare_staff_account(settings):
+def prepare_staff_account():
     os.environ.update(STAFF_USER="staff", SESSION_SECURE="0")
     os.environ.pop("STAFF_PASSWORD", None)
-    connection = make_conninfo(
-        host=settings["PGHOST"], port=settings["PGPORT"], user=settings["PGUSER"],
-        password=settings["PGPASSWORD"], dbname=settings["PGDATABASE"], sslmode="disable",
-    )
-    with psycopg.connect(connection) as database:
-        accounts_exist = database.execute("SELECT to_regclass('public.staff_credential')").fetchone()[0]
+    with db() as database:
+        accounts_exist = database.execute("SELECT to_regclass('public.staff_credential') AS name").fetchone()["name"]
         if accounts_exist and database.execute(
             "SELECT 1 FROM staff_credential WHERE username=%s", ("staff",)
         ).fetchone():
@@ -120,16 +121,92 @@ def prepare_staff_account(settings):
     announce("setup_required")
     for line in sys.stdin:
         try:
-            password = json.loads(line)["password"]
+            payload = json.loads(line)
+            password = payload["password"]
             if not isinstance(password, str):
                 raise ValueError
             validate_password(password)
         except (ValueError, TypeError, KeyError, UnicodeError):
             announce("setup_error", message="Choose a unique password of 16 to 1024 characters.")
         else:
-            os.environ["STAFF_PASSWORD"] = password
-            return True
+            if "restore_path" not in payload:
+                os.environ["STAFF_PASSWORD"] = password
+                return True
+            try:
+                with Path(payload["restore_path"]).open("rb") as file, db() as connection:
+                    connection.execute(Path(__file__).with_name("schema.sql").read_text(encoding="utf-8"))
+                    restore_backup(connection, file, password)
+            except BackupError as error:
+                announce("setup_error", message=str(error))
+            except (OSError, TypeError, ValueError, psycopg.Error):
+                announce("setup_error", message="The backup could not be restored. Check the file and try again.")
+            else:
+                return True
     return False
+
+
+class BackupRequest(BaseModel):
+    passphrase: str = Field(min_length=16, max_length=1024)
+
+
+backup_lock = threading.Lock()
+pending_backups = {}
+
+
+def discard_backup(key):
+    with backup_lock:
+        entry = pending_backups.pop(key, None)
+    if entry:
+        entry[0].close()
+
+
+def create_backup(payload: BackupRequest):
+    try:
+        validate_password(payload.passphrase)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    if not backup_lock.acquire(blocking=False):
+        raise HTTPException(409, "A backup is already being prepared. Try again in a moment.")
+    try:
+        if pending_backups:
+            raise HTTPException(409, "A backup is already waiting to download.")
+        archive = TemporaryFile()
+        try:
+            with db() as connection:
+                write_backup(connection, archive, payload.passphrase)
+            size = archive.tell()
+            archive.seek(0)
+        except (OSError, ValueError, psycopg.Error):
+            archive.close()
+            raise HTTPException(500, "Could not create a backup. Check free disk space and try again.") from None
+        key = secrets.token_urlsafe(32)
+        timer = threading.Timer(60, discard_backup, args=(key,))
+        timer.daemon = True
+        pending_backups[key] = archive, size, timer
+        timer.start()
+        return {"key": key}
+    finally:
+        backup_lock.release()
+
+
+def download_backup(key: str):
+    with backup_lock:
+        entry = pending_backups.pop(key, None)
+    if not entry:
+        raise HTTPException(404, "This backup download expired. Create a new backup.")
+    archive, size, timer = entry
+    timer.cancel()
+
+    def download():
+        with archive:
+            while data := archive.read(BLOCK):
+                yield data
+
+    return StreamingResponse(download(), media_type="application/octet-stream", headers={
+        "Content-Disposition": f'attachment; filename="ASUFC-Finance-{date.today().isoformat()}.asufcbak"',
+        "Content-Length": str(size),
+        "Cache-Control": "no-store",
+    })
 
 
 def serve_staff(frontend_dir):
@@ -144,7 +221,10 @@ def serve_staff(frontend_dir):
                 yield
 
         desktop_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+        desktop_app.add_exception_handler(RequestValidationError, safe_validation_error)
         desktop_app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1"])
+        desktop_app.add_api_route("/api/desktop/backup", create_backup, methods=["POST"], dependencies=[Depends(staff)])
+        desktop_app.add_api_route("/api/desktop/backup/{key}", download_backup, methods=["GET"], dependencies=[Depends(staff)])
         desktop_app.mount("/api", app)
         desktop_app.mount("/", StaticFiles(directory=frontend_dir, html=True))
 
@@ -190,8 +270,8 @@ def main():
     try:
         if not (args.frontend / "index.html").is_file():
             raise ValueError("The staff application files are missing")
-        with local_database(args.state_dir.resolve(), args.postgres_bin.resolve()) as settings:
-            if prepare_staff_account(settings):
+        with local_database(args.state_dir.resolve(), args.postgres_bin.resolve()):
+            if prepare_staff_account():
                 serve_staff(args.frontend.resolve())
     except ValueError as error:
         announce("error", message=str(error))

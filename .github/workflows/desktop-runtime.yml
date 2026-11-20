@@ -9,6 +9,7 @@ on:
       - 'frontend/**'
       - 'scripts/desktop_backend.py'
       - 'scripts/stage_desktop_runtime.py'
+      - 'scripts/verify_desktop_install.py'
       - 'scripts/verify_desktop_runtime.py'
   workflow_dispatch:
 
@@ -23,7 +24,7 @@ jobs:
   desktop-runtime:
     name: Runtime on ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +77,8 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run package
+      - name: Verify the runtime from the installed or extracted package
+        run: python scripts/verify_desktop_install.py
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-candidate-${{ matrix.os }}
@@ -84,3 +87,4 @@ jobs:
             desktop/release/*.exe
             desktop/release/*.dmg
             desktop/release/*.AppImage
+            desktop/release/SHA256SUMS.txt

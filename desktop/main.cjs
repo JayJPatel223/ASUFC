@@ -12,6 +12,7 @@ let runtime;
 let staffOrigin;
 let canSetPassword = false;
 let stopping = false;
+let selectedBackup;
 
 app.commandLine.appendSwitch('disable-background-networking');
 
@@ -57,6 +58,14 @@ async function showStaffWindow() {
     { urls: ['http://*/*', 'https://*/*'] },
     (request, callback) => callback({ cancel: new URL(request.url).origin !== staffOrigin }),
   );
+  webContents.session.on('will-download', (event, item, initiator) => {
+    const url = new URL(item.getURL());
+    if (initiator !== webContents || url.origin !== staffOrigin) {
+      event.preventDefault();
+      return;
+    }
+    item.setSaveDialogOptions({ title: 'Save ASUFC Finance file', defaultPath: path.join(app.getPath('downloads'), item.getFilename()) });
+  });
 
   const child = spawn(path.join(bundle, 'asufc-backend', executable), [
     '--state-dir', state,
@@ -74,12 +83,28 @@ async function showStaffWindow() {
     if (!stopping) stopWithError('The local ledger stopped. Its log is in the ASUFC Finance application data folder.');
   });
 
-  ipcMain.handle('asufc:initial-password', (event, password) => {
-    if (!canSetPassword || event.sender !== webContents || event.senderFrame?.url !== setupUrl) return false;
+  const fromSetup = event => canSetPassword && event.sender === webContents && event.senderFrame?.url === setupUrl;
+  const submitSetup = (event, password, restorePath) => {
+    if (!fromSetup(event)) return false;
     if (typeof password !== 'string' || password.length < 16 || password.length > 1024) return false;
     canSetPassword = false;
-    runtime.stdin.write(JSON.stringify({ password }) + '\n');
+    runtime.stdin.write(JSON.stringify({ password, restore_path: restorePath }) + '\n');
     return true;
+  };
+  ipcMain.handle('asufc:initial-password', (event, password) => submitSetup(event, password));
+  ipcMain.handle('asufc:choose-backup', async event => {
+    if (!fromSetup(event)) return '';
+    const selection = await dialog.showOpenDialog(window, {
+      title: 'Choose an ASUFC Finance backup',
+      properties: ['openFile'],
+      filters: [{ name: 'ASUFC Finance backup', extensions: ['asufcbak'] }],
+    });
+    if (!fromSetup(event)) return '';
+    selectedBackup = selection.filePaths[0];
+    return selectedBackup ? path.basename(selectedBackup) : '';
+  });
+  ipcMain.handle('asufc:restore-backup', (event, password) => {
+    return Boolean(selectedBackup && submitSetup(event, password, selectedBackup));
   });
 
   createInterface({ input: child.stdout }).on('line', async line => {
@@ -95,6 +120,7 @@ async function showStaffWindow() {
         webContents.send('asufc:password-error', event.message);
       } else if (event.status === 'ready' && Number.isInteger(event.port) && event.port > 0 && event.port < 65536) {
         canSetPassword = false;
+        selectedBackup = undefined;
         staffOrigin = 'http://127.0.0.1:' + event.port;
         await window.loadURL(staffOrigin);
         window.show();

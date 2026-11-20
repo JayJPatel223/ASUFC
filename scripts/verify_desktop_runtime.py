@@ -1,6 +1,7 @@
 """Exercise the offline runtime with a disposable local ledger."""
 
 import argparse
+import base64
 from contextlib import contextmanager
 from http.cookiejar import CookieJar
 from io import BytesIO
@@ -17,11 +18,14 @@ from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_ope
 from zipfile import ZipFile
 
 PASSWORD = "fictional-offline-test-only"
+BACKUP_PASSWORD = "fictional-backup-test-only"
 YEAR = "2026-2027"
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAMAAAACCAIAAAASFvFNAAAAFklEQVR4nGP8//8/AwMDAwMDEwMMAAA2BgMB1iHsRQAAAABJRU5ErkJggg==")
+PDF = b"%PDF-1.4\n% Example receipt for testing\n%%EOF\n"
 
 
 @contextmanager
-def launch(command, state, needs_setup):
+def launch(command, state, needs_setup, restore=None):
     with subprocess.Popen(
         [*command, "--state-dir", str(state)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         text=True, encoding="utf-8",
@@ -41,7 +45,21 @@ def launch(command, state, needs_setup):
                 process.stdin.write(json.dumps({"password": "short"}) + "\n")
                 process.stdin.flush()
                 assert events.get(timeout=10)["status"] == "setup_error"
-                process.stdin.write(json.dumps({"password": PASSWORD}) + "\n")
+                if restore:
+                    damaged = restore.with_suffix(".damaged")
+                    damaged.write_bytes(restore.read_bytes()[:-1])
+                    for file, password, message in [
+                        (restore, "a long but wrong passphrase", "incorrect"),
+                        (damaged, BACKUP_PASSWORD, "incomplete"),
+                    ]:
+                        process.stdin.write(json.dumps({"password": password, "restore_path": str(file)}) + "\n")
+                        process.stdin.flush()
+                        failure = events.get(timeout=45)
+                        assert failure["status"] == "setup_error" and message in failure["message"], failure
+                    payload = {"password": BACKUP_PASSWORD, "restore_path": str(restore)}
+                else:
+                    payload = {"password": PASSWORD}
+                process.stdin.write(json.dumps(payload) + "\n")
                 process.stdin.flush()
                 event = events.get(timeout=45)
             assert event["status"] == "ready", event
@@ -56,7 +74,7 @@ def launch(command, state, needs_setup):
         assert process.returncode == 0, process.returncode
 
 
-def verify(base, record):
+def verify(base, record, backup=None):
     client = build_opener(ProxyHandler({}), HTTPCookieProcessor(CookieJar()))
 
     def fetch(path, data=None):
@@ -83,12 +101,16 @@ def verify(base, record):
         with fetch(asset) as response:
             assert response.status == 200 and response.read()
 
-    try:
-        fetch("/api/funding")
-    except HTTPError as error:
-        assert error.code == 401, error.code
-    else:
-        raise AssertionError("Funding records are accessible without signing in")
+    def reject(path, code, data=None):
+        try:
+            with fetch(path, data):
+                raise AssertionError(f"{path} did not return {code}")
+        except HTTPError as error:
+            assert error.code == code, (error.code, error.read())
+
+    reject("/api/funding", 401)
+    reject("/api/transactions/1/files/1", 401)
+    reject("/api/desktop/backup", 401, {"passphrase": BACKUP_PASSWORD})
 
     def api(path, data=None):
         with fetch("/api" + path, data) as response:
@@ -101,19 +123,44 @@ def verify(base, record):
             "expected_cents": 12000, "received_cents": 10000,
         })
         budget = api("/budgets", {"funding_id": source["id"], "program_code": "ASUFCGR", "cents": 5000})
-        api("/transactions", {
+        purchase = api("/transactions", {
             "purchase_date": "2026-11-04", "supplier": "Example Shop", "purchase_type": "Food",
             "cents": 1250, "allocations": [{"budget_id": budget["id"], "cents": 1250}],
         })
+        path = f"/transactions/{purchase['id']}/files"
+        initial = {"name": "Fictional receipt.png", "content": base64.b64encode(PNG).decode()}
+        reject("/api" + path, 422, initial | {"name": "../receipt.png"})
+        reject("/api" + path, 422, initial | {"content": "AAAA"})
+        receipt = api(path, initial)
+        reject("/api" + path, 409, initial)
+        api(path, {"name": "Corrected fictional receipt.pdf", "content": base64.b64encode(PDF).decode(),
+                   "replaces_id": receipt["id"], "reason": "Fictional replacement for the recovery test"})
+        reject("/api" + path, 409, initial)
     report = api("/reports/spending?year=" + YEAR)
     assert report["totals"] == {"cash_cents": 1250, "credit_cents": 0}
     assert report["purchase_count"] == 1
     funds = api("/funding")
     assert len(funds) == 1 and funds[0]["remaining_cents"] == 8750 and funds[0]["received_cents"] == 10000
     assert api("/reports/reconciliation?year=" + YEAR)["ok"]
+    purchase, = api("/transactions")
+    path = f"/transactions/{purchase['id']}/files"
+    current, original = api(path)
+    assert current["replaces_id"] == original["id"] and original["replaced_by"] == current["id"]
+    assert current["replacement_reason"] == "Fictional replacement for the recovery test"
+    for row, content in [(current, PDF), (original, PNG)]:
+        with fetch("/api" + path + "/" + str(row["id"])) as receipt:
+            assert receipt.read() == content and receipt.headers["Content-Disposition"].startswith("attachment;")
     with fetch("/api/reports/spending.xlsx?year=" + YEAR) as response:
         with ZipFile(BytesIO(response.read())) as workbook:
             assert "xl/workbook.xml" in workbook.namelist()
+    if backup:
+        key = api("/desktop/backup", {"passphrase": BACKUP_PASSWORD})["key"]
+        with fetch("/api/desktop/backup/" + key) as archive:
+            data = archive.read()
+        assert data.startswith(b"ASUFCBK")
+        assert PDF not in data and b"Fictional offline grant" not in data
+        backup.write_bytes(data)
+        reject("/api/desktop/backup/" + key, 404)
 
 
 def main():
@@ -125,12 +172,15 @@ def main():
         parser.error("Provide the desktop runtime command after --")
     with TemporaryDirectory(prefix="asufc-desktop-") as path:
         state = Path(path)
+        backup = state / "fictional.asufcbak"
         with launch(command, state, needs_setup=True) as base:
-            verify(base, record=True)
+            verify(base, record=True, backup=backup)
         assert (state / "ledger" / "PG_VERSION").is_file()
         with launch(command, state, needs_setup=False) as base:
             verify(base, record=False)
-    print("Verified local setup, sign-in, purchases, reports, export, and persistence after relaunch.")
+        with launch(command, state / "restored-copy", needs_setup=True, restore=backup) as base:
+            verify(base, record=False)
+    print("Verified local purchases, receipt history, reports, restart, and encrypted recovery into a fresh ledger.")
 
 
 if __name__ == "__main__":

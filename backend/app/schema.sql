@@ -161,3 +161,20 @@ CREATE TABLE IF NOT EXISTS staff_credential (
  password_hash text NOT NULL,
  updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS purchase_receipt_file (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ purchase_id bigint NOT NULL REFERENCES purchase(id),
+ original_name text NOT NULL,
+ media_type text NOT NULL CHECK (media_type IN ('image/jpeg','image/png','application/pdf')),
+ sha256 text NOT NULL UNIQUE,
+ contents bytea NOT NULL CHECK (octet_length(contents) BETWEEN 1 AND 5000000),
+ uploaded_at timestamptz NOT NULL DEFAULT now(),
+ uploaded_by text NOT NULL,
+ replaces_id bigint UNIQUE,
+ replacement_reason text,
+ UNIQUE(purchase_id,id),
+ FOREIGN KEY(purchase_id,replaces_id) REFERENCES purchase_receipt_file(purchase_id,id),
+ CHECK ((replaces_id IS NULL) = (replacement_reason IS NULL))
+);
+CREATE INDEX IF NOT EXISTS purchase_receipt_file_purchase_idx ON purchase_receipt_file(purchase_id,id);

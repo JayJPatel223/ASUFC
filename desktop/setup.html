@@ -12,7 +12,7 @@
 <main>
   <h1>Set up ASUFC Finance</h1>
   <p>Choose a password for the staff login on this computer. The username is <strong>staff</strong>.</p>
-  <form>
+  <form id="new-ledger">
     <label>New password
       <input name="password" type="password" required minlength="16" maxlength="1024" autocomplete="new-password">
     </label>
@@ -20,9 +20,21 @@
       <input name="confirmation" type="password" required minlength="16" maxlength="1024" autocomplete="new-password">
     </label>
     <p class="hint">Use at least 16 characters.</p>
-    <p id="error" role="alert"></p>
     <button type="submit">Create staff login</button>
   </form>
+  <details>
+    <summary>Restore an encrypted backup</summary>
+    <form id="restore-ledger">
+      <p>Use the backup passphrase. After restoring, sign in with the staff password from the backup.</p>
+      <button id="choose-backup" type="button">Choose backup file</button>
+      <p id="selected-backup" aria-live="polite">No backup selected</p>
+      <label>Backup passphrase
+        <input name="passphrase" type="password" required minlength="16" maxlength="1024" autocomplete="off">
+      </label>
+      <button id="restore-backup" type="submit" disabled>Restore backup</button>
+    </form>
+  </details>
+  <p id="error" role="alert"></p>
 </main>
 </body>
 </html>
