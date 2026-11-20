@@ -22,8 +22,9 @@ function stopWithError(message) {
 }
 
 async function showStaffWindow() {
-  if (!app.isPackaged && process.env.ASUFC_DESKTOP_TEST_DATA) {
-    const testDirectory = path.resolve(process.env.ASUFC_DESKTOP_TEST_DATA);
+  const testData = !app.isPackaged && process.env.ASUFC_DESKTOP_TEST_DATA;
+  if (testData) {
+    const testDirectory = path.resolve(testData);
     mkdirSync(testDirectory, { recursive: true, mode: 0o700 });
     app.setPath('userData', testDirectory);
   }
@@ -42,7 +43,8 @@ async function showStaffWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      partition: 'asufc-staff',
+      // The Windows smoke driver attaches to Electron's default DevTools context.
+      partition: testData && process.platform === 'win32' ? undefined : 'asufc-staff',
     },
   });
   const { webContents } = window;

@@ -1,5 +1,5 @@
 import { expect } from '@playwright/test';
-import { chromium } from 'playwright';
+import { _electron, chromium } from 'playwright';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -18,13 +18,19 @@ const state = await mkdtemp(path.join(tmpdir(), 'asufc-window-'));
 const password = 'fictional-app-window-test-only';
 
 async function launch() {
+  const env = { ...process.env, ASUFC_DESKTOP_TEST_DATA: state };
+  if (process.platform !== 'win32') {
+    const application = await _electron.launch({ executablePath, args: [desktop], env, timeout: 60_000 });
+    return { page: await application.firstWindow(), close: () => application.close() };
+  }
+
   const listener = createServer().listen(0, '127.0.0.1');
   await once(listener, 'listening');
   const { port } = listener.address();
   await new Promise(resolve => listener.close(resolve));
   const endpoint = 'http://127.0.0.1:' + port;
   const child = spawn(executablePath, [`--remote-debugging-port=${port}`, desktop], {
-    env: { ...process.env, ASUFC_DESKTOP_TEST_DATA: state },
+    env,
     stdio: ['ignore', 'ignore', 'inherit'],
     windowsHide: true,
   });
@@ -90,6 +96,8 @@ try {
     await panel.getByLabel('Confirmed received (CAD)').fill('100');
     await panel.getByRole('button', { name: 'Save funding' }).click();
     await expect(page.getByText('Record saved successfully.')).toBeVisible();
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
   } finally {
     await app.close();
   }
