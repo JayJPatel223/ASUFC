@@ -43,8 +43,7 @@ async function showStaffWindow() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      // The Windows smoke driver attaches to Electron's default DevTools context.
-      partition: testData && process.platform === 'win32' ? undefined : 'asufc-staff',
+      partition: 'asufc-staff',
     },
   });
   const { webContents } = window;

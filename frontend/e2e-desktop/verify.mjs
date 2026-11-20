@@ -1,11 +1,10 @@
 import { expect } from '@playwright/test';
-import { _electron, chromium } from 'playwright';
+import { _electron } from 'playwright';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -18,56 +17,26 @@ const state = await mkdtemp(path.join(tmpdir(), 'asufc-window-'));
 const password = 'fictional-app-window-test-only';
 
 async function launch() {
-  const env = { ...process.env, ASUFC_DESKTOP_TEST_DATA: state };
-  if (process.platform !== 'win32') {
-    const application = await _electron.launch({ executablePath, args: [desktop], env, timeout: 60_000 });
-    return { page: await application.firstWindow(), close: () => application.close() };
-  }
-
-  const listener = createServer().listen(0, '127.0.0.1');
-  await once(listener, 'listening');
-  const { port } = listener.address();
-  await new Promise(resolve => listener.close(resolve));
-  const endpoint = 'http://127.0.0.1:' + port;
-  const child = spawn(executablePath, [`--remote-debugging-port=${port}`, desktop], {
-    env,
-    stdio: ['ignore', 'ignore', 'inherit'],
-    windowsHide: true,
+  const app = await _electron.launch({
+    executablePath, args: [desktop], env: { ...process.env, ASUFC_DESKTOP_TEST_DATA: state },
+    timeout: 60_000,
   });
-  const exited = once(child, 'exit');
-  let browser;
-  try {
-    for (let attempt = 0; attempt < 120; attempt++) {
-      if (child.exitCode !== null || child.signalCode !== null) throw new Error('The desktop application exited before opening.');
-      try {
-        const response = await fetch(endpoint + '/json/version', {signal: AbortSignal.timeout(500)});
-        if (response.ok) break;
-      } catch {
-        // The window can start before Electron's test debugging endpoint.
-      }
-      if (attempt === 119) throw new Error('Electron did not expose the local test endpoint.');
-      await wait(500);
+  return { page: await app.firstWindow(), close: () => app.close() };
+}
+
+async function verifyWindowsWindow() {
+  const entry = fileURLToPath(new URL('./windows-check.cjs', import.meta.url));
+  for (const phase of ['setup', 'reopen']) {
+    const child = spawn(executablePath, [entry], {
+      env: { ...process.env, ASUFC_DESKTOP_TEST_DATA: state, ASUFC_DESKTOP_TEST_PHASE: phase },
+      stdio: 'inherit',
+    });
+    const result = await Promise.race([once(child, 'exit'), wait(90_000, null, {ref: false})]);
+    if (!result) {
+      child.kill();
+      throw new Error('The Windows window check timed out during ' + phase);
     }
-    browser = await chromium.connectOverCDP(endpoint);
-    const context = browser.contexts()[0];
-    const page = context.pages()[0] ?? await context.waitForEvent('page', {timeout: 60_000});
-    return {
-      page,
-      async close() {
-        await page.close();
-        const result = await Promise.race([exited, wait(45_000, null, {ref: false})]);
-        if (!result) {
-          child.kill();
-          throw new Error('The desktop application did not close the ledger.');
-        }
-        assert.equal(result[0], 0);
-        await browser.close();
-      },
-    };
-  } catch (error) {
-    await browser?.close();
-    child.kill();
-    throw error;
+    assert.equal(result[0], 0, 'The Windows window check failed during ' + phase);
   }
 }
 
@@ -80,7 +49,7 @@ async function staffLogin(page) {
   assert.match(page.url(), /^http:\/\/127\.0\.0\.1:\d+\/$/);
 }
 
-try {
+async function verifyPlaywrightWindow() {
   let app = await launch();
   try {
     const { page } = app;
@@ -111,11 +80,16 @@ try {
   } finally {
     await app.close();
   }
+}
+
+try {
+  if (process.platform === 'win32') await verifyWindowsWindow();
+  else await verifyPlaywrightWindow();
 } catch (error) {
   const log = await readFile(path.join(state, 'staff-data', 'desktop.log'), 'utf8').catch(() => '');
   if (log) console.error(log);
   throw error;
 } finally {
-  await rm(state, { recursive: true, force: true });
+  await rm(state, { recursive: true, force: true, maxRetries: 12, retryDelay: 250 });
 }
 console.log('Verified the desktop window, first-run setup, sign-in, and saved records after reopening.');
