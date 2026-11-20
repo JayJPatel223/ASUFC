@@ -14,6 +14,16 @@ Run `docker compose run --rm api python -m pytest` for backend unit tests. The P
 
 See docs/architecture.md and PROGRESS.md for limitations. No production readiness claim.
 
+## Private staff workspace
+
+For a local workspace with fictional records, set the two passwords in your private Compose environment and run the staff profile from the repository root with Docker Compose 2.24.4 or newer.
+
+```sh
+docker compose -p asufc-staff -f docker-compose.yml -f docker-compose.staff.yml up --build -d
+```
+
+Open `http://127.0.0.1:8080` on the host. The gateway binds to loopback, and the API and PostgreSQL stay on the Compose network. Set `ASUFC_STAFF_PORT` in your private Compose environment if port 8080 is taken. The Compose project keeps its own PostgreSQL volume across restarts. Use the separate HTTPS configuration on an approved production host.
+
 ## Staff credentials
 STAFF_PASSWORD is a one-time bootstrap password (minimum 16 characters); subsequent changes are stored as salted scrypt hashes. Change password in Account; all sessions are revoked. Trusted host operator recovery: `docker compose exec api python -m app.reset_password`. Password is entered interactively, never as a shell argument. Keep STAFF_USER stable; changing it is not an account handover procedure.
 

@@ -209,3 +209,36 @@ jobs:
           test "$(curl -ks -b /tmp/asufc-cookie -o /dev/null -w '%{http_code}' https://localhost/api/funding)" = 401
       - if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.production.yml down -v
+  private-workspace:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: fictional-staff-db-password
+      STAFF_USER: teststaff
+      STAFF_PASSWORD: fictional-local-staff-password
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -p asufc-staff -f docker-compose.yml -f docker-compose.staff.yml up --build -d
+      - name: Check loopback binding and authenticated staff access
+        run: |
+          set -euo pipefail
+          compose=(docker compose -p asufc-staff -f docker-compose.yml -f docker-compose.staff.yml)
+          test "$("${compose[@]}" port gateway 8080)" = '127.0.0.1:8080'
+          for service in api db; do
+            id=$("${compose[@]}" ps -q "$service")
+            test -n "$id"
+            test -z "$(docker port "$id")"
+          done
+          auth_status() { curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/funding; }
+          for i in $(seq 1 30); do
+            if [ "$(auth_status)" = 401 ]; then break; fi
+            sleep 1
+          done
+          test "$(auth_status)" = 401
+          curl -fsS http://127.0.0.1:8080/ | grep -Fq '<title>ASUFC | Finance</title>'
+          cookies=$(mktemp)
+          trap 'rm -f "$cookies"' EXIT
+          curl -fsS -c "$cookies" -o /dev/null -H 'X-ASUFC-Request: 1' -H 'Content-Type: application/json' \
+            -d '{"username":"teststaff","password":"fictional-local-staff-password"}' http://127.0.0.1:8080/api/auth/login
+          curl -fsS -b "$cookies" -o /dev/null http://127.0.0.1:8080/api/dashboard
+      - if: always()
+        run: docker compose -p asufc-staff -f docker-compose.yml -f docker-compose.staff.yml down -v

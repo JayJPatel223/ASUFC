@@ -1,4 +1,4 @@
-import React,{useState,useEffect,useMemo} from 'react';
+import React,{useState,useEffect,useMemo,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
 import {makeApi,cents,money,Program,Funding,FundingEligibility,Budget,Transaction,Dashboard,Api,AuditEvent,downloadReport,FundingReceipt,AcademicPeriod,FundingTransfer} from './api';
 import './style.css';
@@ -13,11 +13,115 @@ function Input({name,label,type='text',required=true,defaultValue}:{name:string;
 function ProgramSelect({programs,name='program',optional=false}:{programs:Program[];name?:string;optional?:boolean}){return <select aria-label={name==="suggestProgram"?"Program for suggestion":optional?"Program restriction":"Program"} name={name} required={!optional}>{optional&&<option value="">All programs</option>}{programs.map(p=><option key={p.code} value={p.code}>{p.name} · {p.code}</option>)}</select>}
 function Panel({title,children}:{title:string;children:React.ReactNode}){return <section className="panel"><h2>{title}</h2>{children}</section>}
 function Form({children,onSubmit,button,busy}:{children:React.ReactNode;onSubmit:(data:FormData)=>Promise<void>;button:string;busy:boolean}){const [error,setError]=useState('');return <form onSubmit={async e=>{e.preventDefault();setError('');const el=e.currentTarget;try{await onSubmit(new FormData(el));el.reset()}catch(e){setError(String((e as Error).message))}}}>{children}{error&&<p role="alert" className="error">{error}</p>}<button disabled={busy} type="submit">{button}</button></form>}
-function Overview({data,year}:{data:Data;year:string}){const cash=data.dashboard.funding.find(f=>f.kind==='cash');const credit=data.dashboard.funding.find(f=>f.kind==='credit');const rows=data.funding.filter(f=>f.academic_year===year);const alerts=rows.filter(f=>f.capacity_cents>0&&f.remaining_cents/f.capacity_cents<=.15);return <>
-<div className="metrics">{[['Cash received',cash?.received||0],['Cash spent',cash?.spent||0],['Cash carried in',cash?.carried_in||0],['Cash carried out',cash?.carried_out||0],['Credit carried in',credit?.carried_in||0],['Credit carried out',credit?.carried_out||0],['Cash remaining',(cash?.capacity||0)-(cash?.spent||0)],['Credit remaining',(credit?.capacity||0)-(credit?.spent||0)],['Expected cash',cash?.expected||0],['Expected credit',credit?.expected||0],['Unallocated cash',rows.filter(f=>f.kind==='cash').reduce((s,f)=>s+Number(f.unallocated_cents),0)]].map(([label,n])=><article className="metric" key={label}><span>{label}</span><strong>{money(Number(n))}</strong></article>)}</div>
-<Panel title="Program utilization">{data.dashboard.programs.length===0?<p>No budgets for this year.</p>:data.dashboard.programs.map(p=><div className="barrow" key={p.program_code}><div><b>{data.programs.find(x=>x.code===p.program_code)?.name||p.program_code}</b><span>{money(p.spent)} / {money(p.allocated)}</span></div><progress max={Number(p.allocated)||1} value={Number(p.spent)}/><small>{money(p.allocated-p.spent)} remaining</small></div>)}</Panel>
-<Panel title="Funding utilization and alerts">{alerts.map(f=><p key={f.id} className="warning">{f.name}: low balance ({money(f.remaining_cents)})</p>)}{rows.filter(f=>f.expiry).map(f=><p key={f.id}>{f.name}: expiry {f.expiry}</p>)}<p className="muted">Unallocated confirmed balances below may support additional eligible budgets. Check restrictions and expiry before allocating.</p><FundingTable rows={rows}/></Panel></>}
-function FundingTable({rows}:{rows:Funding[]}){return <div className="tablewrap"><table><thead><tr><th>Source</th><th>Type</th><th>Received</th><th>Carried in</th><th>Carried out</th><th>Expected outstanding</th><th>Remaining</th><th>Unallocated</th></tr></thead><tbody>{rows.map(f=><tr key={f.id}><td>{f.name}<small>{fundingRuleSummary(f)}</small>{!DEMO&&f.notes&&<small>{f.notes}</small>}</td><td>{f.kind}</td><td>{money(f.received_cents)}</td><td>{money(f.carried_in_cents)}</td><td>{money(f.carried_out_cents)}</td><td>{money(f.expected_cents-f.received_cents)}</td><td>{money(f.remaining_cents)}</td><td>{money(f.unallocated_cents)}</td></tr>)}</tbody></table>{!rows.length&&<p>No funding recorded.</p>}</div>}
+function BalanceMetrics({values}: {values: [string, number][]}) {
+  return <div className="balance-metrics">{values.map(([label, amount]) =>
+    <div className="metric" key={label}><span>{label}</span><strong>{money(amount)}</strong></div>
+  )}</div>;
+}
+
+function Overview({data, year, openPage}: {data: Data; year: string; openPage: (page: Page) => void}) {
+  const cash = data.dashboard.funding.find(source => source.kind === 'cash');
+  const credit = data.dashboard.funding.find(source => source.kind === 'credit');
+  const funding = data.funding.filter(source => source.academic_year === year);
+  const unallocated = (kind: Funding['kind']) => funding
+    .filter(source => source.kind === kind)
+    .reduce((total, source) => total + Number(source.unallocated_cents), 0);
+  const today = new Date();
+  const cutoff = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
+  const dateKey = (date: Date) => [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+  const todayKey = dateKey(today);
+  const cutoffKey = dateKey(cutoff);
+  const alerts = funding.flatMap(source => {
+    const details = [];
+    if (source.expiry && source.expiry <= cutoffKey && source.remaining_cents > 0) {
+      details.push((source.expiry < todayKey ? 'Expired ' : 'Expires ') + source.expiry);
+    }
+    if (source.capacity_cents > 0 && source.remaining_cents <= source.capacity_cents * 0.15) {
+      details.push('Low balance (' + money(source.remaining_cents) + ')');
+    }
+    return details.length ? [{source, details}] : [];
+  });
+  const recent = data.transactions
+    .filter(purchase => purchase.status === 'confirmed' && purchase.allocations.some(row => row.academic_year === year))
+    .sort((a, b) => b.purchase_date.localeCompare(a.purchase_date) || b.id - a.id)
+    .slice(0, 5);
+
+  return <>
+    <div className="overview-actions">
+      <button onClick={() => openPage('Transactions')}>Record a purchase</button>
+      <button className="secondary" onClick={() => openPage('Reports')}>Open spending reports</button>
+    </div>
+    <div className="overview-columns">
+      <section className="panel balance-panel" aria-labelledby="cash-overview">
+        <h2 id="cash-overview">Cash</h2>
+        <BalanceMetrics values={[
+          ['Cash remaining', (cash?.capacity ?? 0) - (cash?.spent ?? 0)],
+          ['Cash received', cash?.received ?? 0],
+          ['Cash spent', cash?.spent ?? 0],
+        ]}/>
+      </section>
+      <section className="panel balance-panel" aria-labelledby="credit-overview">
+        <h2 id="credit-overview">Purchasing credits</h2>
+        <BalanceMetrics values={[
+          ['Credit remaining', (credit?.capacity ?? 0) - (credit?.spent ?? 0)],
+          ['Credit received', credit?.received ?? 0],
+          ['Credit used', credit?.spent ?? 0],
+        ]}/>
+      </section>
+    </div>
+    <div className="overview-columns">
+      <section className="panel" aria-labelledby="funding-overview">
+        <h2 id="funding-overview">Expected and unallocated funding</h2>
+        <BalanceMetrics values={[
+          ['Expected cash', cash?.expected ?? 0],
+          ['Expected credit', credit?.expected ?? 0],
+          ['Unallocated cash', unallocated('cash')],
+          ['Unallocated credit', unallocated('credit')],
+        ]}/>
+        <p className="muted">Expected funds become available after receipt is confirmed. Check restrictions and expiry before allocating a balance.</p>
+        <details>
+          <summary>Carry-forward totals</summary>
+          <dl className="carry-totals">
+            <dt>Cash carried in</dt><dd>{money(cash?.carried_in ?? 0)}</dd>
+            <dt>Cash carried out</dt><dd>{money(cash?.carried_out ?? 0)}</dd>
+            <dt>Credit carried in</dt><dd>{money(credit?.carried_in ?? 0)}</dd>
+            <dt>Credit carried out</dt><dd>{money(credit?.carried_out ?? 0)}</dd>
+          </dl>
+        </details>
+      </section>
+      <Panel title="Funding alerts">
+        {alerts.length ? <ul className="funding-alerts">{alerts.map(({source, details}) =>
+          <li className="warning" key={source.id}><strong>{source.name}</strong><span>{details.join(' · ')}</span></li>
+        )}</ul> : <p>No low balances, upcoming expiry dates or expired balances in this year.</p>}
+      </Panel>
+    </div>
+    <Panel title="Program utilization">
+      {data.dashboard.programs.length ? data.dashboard.programs.map(program => {
+        const name = data.programs.find(row => row.code === program.program_code)?.name ?? program.program_code;
+        return <div className="barrow" key={program.program_code}>
+          <div><b>{name}</b><span>{money(program.spent)} / {money(program.allocated)}</span></div>
+          <progress aria-label={name + ' budget used'} max={program.allocated || 1} value={program.spent}/>
+          <small>{money(program.allocated - program.spent)} remaining</small>
+        </div>;
+      }) : <p>No budgets for this year.</p>}
+    </Panel>
+    <Panel title="Recent confirmed purchases">
+      {recent.length ? <div className="tablewrap"><table>
+        <thead><tr><th scope="col">Date</th><th scope="col">Supplier</th><th scope="col">Total</th></tr></thead>
+        <tbody>{recent.map(purchase => <tr key={purchase.id}>
+          <td>{purchase.purchase_date}</td><td>{purchase.supplier}</td><td>{money(purchase.cents)}</td>
+        </tr>)}</tbody>
+      </table></div> : <p>No confirmed purchases for this year.</p>}
+      <button className="secondary overview-link" onClick={() => openPage('History')}>View transaction history</button>
+    </Panel>
+    <Panel title="Funding balances"><FundingTable rows={funding}/></Panel>
+  </>;
+}
+function FundingTable({rows}:{rows:Funding[]}){return <div className="tablewrap"><table><thead><tr><th scope="col">Source</th><th scope="col">Type</th><th scope="col">Received</th><th scope="col">Carried in</th><th scope="col">Carried out</th><th scope="col">Expected outstanding</th><th scope="col">Remaining</th><th scope="col">Unallocated</th></tr></thead><tbody>{rows.map(f=><tr key={f.id}><td>{f.name}<small>{fundingRuleSummary(f)}</small>{f.expiry&&<small>Expires <time dateTime={f.expiry}>{f.expiry}</time></small>}{!DEMO&&f.notes&&<small>{f.notes}</small>}</td><td>{f.kind}</td><td>{money(f.received_cents)}</td><td>{money(f.carried_in_cents)}</td><td>{money(f.carried_out_cents)}</td><td>{money(f.expected_cents-f.received_cents)}</td><td>{money(f.remaining_cents)}</td><td>{money(f.unallocated_cents)}</td></tr>)}</tbody></table>{!rows.length&&<p>No funding recorded.</p>}</div>}
 function FundingPage({data,year,save,busy,api}:{data:Data;year:string;save:Save;busy:boolean;api:Api}){const rows=data.funding.filter(f=>f.academic_year===year);return <><div className="twocol"><Panel title="Add funding"><Form busy={busy} button="Save funding" onSubmit={async f=>save('/funding',{name:field(f,'name'),academic_year:year,kind:field(f,'kind'),expected_cents:cents(field(f,'award')),received_cents:cents(field(f,'received')),expiry:field(f,'expiry')||null,...(DEMO?{eligible_program:field(f,'program')||null,eligible_supplier:field(f,'supplier')||null}:readFundingRuleFields(f)),organization:field(f,'organization'),source_type:field(f,'source_type'),recurring:field(f,'recurring')==='yes',expected_date:field(f,'expected_date')||null,notes:field(f,'notes'),received_on:field(f,'received_on')||null})}><Input name="name" label="Funding source"/><Input name="organization" label="Funding organization" required={false}/><Input name="source_type" label="Funding classification" required={false}/><label>Recurring funding<select name="recurring"><option value="no">No / not confirmed</option><option value="yes">Yes</option></select></label><Input name="expected_date" label="Expected receipt date" type="date" required={false}/><Input name="received_on" label="Actual receipt date (if known)" type="date" required={false}/><Input name="notes" label="Grant notes" required={false}/><label>Funding type<select name="kind"><option value="cash">Cash</option><option value="credit">Purchasing credit</option></select></label><Input name="award" label="Total award (CAD)" type="number"/><Input name="received" label="Confirmed received (CAD)" type="number" defaultValue="0"/>{DEMO?<><label>Program restriction<ProgramSelect programs={data.programs} optional/></label><Input name="supplier" label="Supplier restriction" required={false}/></>:<FundingRuleFields programs={data.programs}/>}<Input name="expiry" label="Expiry date" type="date" required={false}/></Form></Panel><Panel title="Confirm funding received"><Form busy={busy} button="Update confirmed amount" onSubmit={async f=>save('/funding/'+field(f,'id')+'/received',{received_cents:cents(field(f,'total')),received_on:field(f,'received_on')||null},'PATCH')}><label>Funding source<select name="id" required><option value="">Select source</option>{rows.map(f=><option key={f.id} value={f.id}>{f.name} · received {money(f.received_cents)}</option>)}</select></label><Input name="total" label="New cumulative received amount (CAD)" type="number"/><Input name="received_on" label="Receipt date (if known)" type="date" required={false}/></Form></Panel></div><Panel title="Funding records"><FundingTable rows={rows}/></Panel>{!DEMO&&<><FundingRulesForm programs={data.programs} rows={rows} save={save} busy={busy}/><FundingExpiryForm rows={rows} save={save} busy={busy}/></>}<ReceiptHistory api={api} rows={rows}/><CarryForward data={data} year={year} save={save} busy={busy}/></>}
 function fundingRules(funding?: Funding): FundingEligibility {
   return {
@@ -141,8 +245,14 @@ function ExcelImport({api,data,onImported}:{api:Api;data:Data;onImported:(count:
 }
 function Account({api,onChanged}:{api:Api;onChanged:()=>void}){const [busy,setBusy]=useState(false);return <Panel title="Change staff password"><p>Changing your password signs out every active session.</p><Form busy={busy} button="Change password" onSubmit={async f=>{if(field(f,'new')!==field(f,'repeat'))throw new Error('Passwords differ');setBusy(true);try{await api('/auth/password','POST',{current_password:field(f,'current'),new_password:field(f,'new')});onChanged()}finally{setBusy(false)}}}><Input name="current" label="Current password" type="password"/><Input name="new" label="New password (minimum 16 characters)" type="password"/><Input name="repeat" label="Repeat new password" type="password"/></Form></Panel>}
 function Workspace({api,logout}:{api:Api;logout:()=>void}){const [year,setYear]=useState('2026-2027');const [page,setPage]=useState<Page>('Overview');const [data,setData]=useState<Data|null>(null);const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [message,setMessage]=useState('');const [version,setVersion]=useState(0);
+const heading = useRef<HTMLHeadingElement>(null);
+const openPage = (next: Page) => {
+  setPage(next);
+  setMessage('');
+  requestAnimationFrame(() => heading.current?.focus());
+};
 useEffect(()=>{let active=true;setData(null);setError('');Promise.all([api<Program[]>('/programs'),api<Funding[]>('/funding'),api<Budget[]>('/budgets'),api<Transaction[]>('/transactions'),api<Dashboard>('/dashboard?year='+encodeURIComponent(year)),api<AuditEvent[]>('/audit'),api<AcademicPeriod[]>('/academic-years'),api<FundingTransfer[]>('/funding-transfers')]).then(([programs,funding,budgets,transactions,dashboard,audit,periods,transfers])=>{if(active)setData({programs,funding,budgets,transactions,dashboard,audit,periods,transfers})}).catch(e=>{if(active)setError(e.message)});return()=>{active=false}},[api,year,version]);
 const save:Save=async(path,body,method='POST')=>{setBusy(true);setMessage('');try{await api(path,method,body);setMessage('Record saved successfully.');setVersion(v=>v+1)}finally{setBusy(false)}};
-return <div className="shell"><aside><div className="brand">ASUFC<span>FINANCE WORKSPACE</span></div><nav>{pages.map(p=><button className={page===p?'active':''} key={p} onClick={()=>{setPage(p);setMessage('')}}>{p}</button>)}</nav><button className="logout" onClick={logout}>Sign out</button></aside><main>{DEMO&&<div className="demo-banner" role="note"><strong>Public demonstration — fictional data only.</strong> Changes stay in this tab and reset on reload. Server-only operations (Excel import/export, grant transfers, restriction edits, password changes and period edits) are unavailable. Never enter real records.</div>}<header><div><div className="eyebrow">INTERNAL ADMINISTRATION · DEVELOPMENT</div><h1>{page}</h1></div><label>Academic year<select aria-label="Academic year" value={year} onChange={e=>setYear(e.target.value)}>{Array.from(new Set([year,"2026-2027",...(data?.periods||[]).map(p=>p.academic_year),...(data?.funding||[]).map(f=>f.academic_year)])).sort().map(y=><option key={y}>{y}</option>)}</select></label></header>{message&&<p role="status" className="success">{message}</p>}{error?<p role="alert" className="error">{error} <button onClick={()=>setVersion(v=>v+1)}>Retry</button></p>:!data?<p>Loading financial records…</p>:page==='Overview'?<Overview data={data} year={year}/>:page==='Funding & grants'?<FundingPage data={data} year={year} save={save} busy={busy} api={api}/>:page==='Programs & budgets'?<BudgetsPage data={data} year={year} save={save} busy={busy}/>:page==='Transactions'?<PurchasePage data={data} year={year} save={save} busy={busy} api={api}/>:page==='History'?<History key={year} data={data} year={year} save={save} busy={busy} api={api}/>:page==='Audit log'?<AuditLog events={data.audit}/>:page==='Reports'?<Reports key={year} data={data} year={year} api={api}/>:page==='Academic years'?<AcademicYears data={data} save={save} busy={busy}/>:page==='Reconciliation'?<Reconciliation api={api} year={year}/>:page==='Account'?<Account api={api} onChanged={logout}/>:<ExcelImport api={api} data={data} onImported={count=>{setMessage(count+' purchases imported.');setVersion(v=>v+1)}}/>}</main></div>}
+return <div className="shell"><a className="skip-link" href="#workspace-main">Skip to content</a><aside><div className="brand">ASUFC<span>FINANCE WORKSPACE</span></div><nav aria-label="Finance workspace">{pages.map(p=><button className={page===p?'active':''} aria-current={page===p?'page':undefined} key={p} onClick={()=>openPage(p)}>{p}</button>)}</nav><button className="logout" onClick={logout}>Sign out</button></aside><main id="workspace-main" tabIndex={-1}>{DEMO&&<div className="demo-banner" role="note"><strong>Public demonstration — fictional data only.</strong> Changes stay in this tab and reset on reload. Server-only operations (Excel import/export, grant transfers, restriction edits, password changes and period edits) are unavailable. Never enter real records.</div>}<header><div><div className="eyebrow">INTERNAL ADMINISTRATION · DEVELOPMENT</div><h1 ref={heading} tabIndex={-1}>{page}</h1></div><label>Academic year<select aria-label="Academic year" value={year} onChange={e=>setYear(e.target.value)}>{Array.from(new Set([year,"2026-2027",...(data?.periods||[]).map(p=>p.academic_year),...(data?.funding||[]).map(f=>f.academic_year)])).sort().map(y=><option key={y}>{y}</option>)}</select></label></header>{message&&<p role="status" className="success">{message}</p>}{error?<p role="alert" className="error">{error} <button onClick={()=>setVersion(v=>v+1)}>Retry</button></p>:!data?<p>Loading financial records…</p>:page==='Overview'?<Overview data={data} year={year} openPage={openPage}/>:page==='Funding & grants'?<FundingPage data={data} year={year} save={save} busy={busy} api={api}/>:page==='Programs & budgets'?<BudgetsPage data={data} year={year} save={save} busy={busy}/>:page==='Transactions'?<PurchasePage data={data} year={year} save={save} busy={busy} api={api}/>:page==='History'?<History key={year} data={data} year={year} save={save} busy={busy} api={api}/>:page==='Audit log'?<AuditLog events={data.audit}/>:page==='Reports'?<Reports key={year} data={data} year={year} api={api}/>:page==='Academic years'?<AcademicYears data={data} save={save} busy={busy}/>:page==='Reconciliation'?<Reconciliation api={api} year={year}/>:page==='Account'?<Account api={api} onChanged={logout}/>:<ExcelImport api={api} data={data} onImported={count=>{setMessage(count+' purchases imported.');setVersion(v=>v+1)}}/>}</main></div>}
 function App(){const [authenticated,setAuthenticated]=useState(false),[checking,setChecking]=useState(true),[error,setError]=useState(''),[busy,setBusy]=useState(false);const api=useMemo(()=>DEMO?makeDemoApi():makeApi(),[]);useEffect(()=>{api('/auth/session').then(()=>setAuthenticated(true)).catch(()=>{}).finally(()=>setChecking(false))},[api]);if(checking)return <p>Checking staff session…</p>;if(authenticated)return <Workspace api={api} logout={()=>{api('/auth/logout','POST').then(()=>setAuthenticated(false)).catch(e=>{setError(e.message);setAuthenticated(false)})}}/>;return <div className="login"><Panel title="ASUFC Finance"><p>{DEMO?'Public demonstration. All records are fictional. No server or real authentication is connected.':'Staff-only development workspace. Use fictional records only.'}</p>{DEMO?<button onClick={async()=>{await api('/auth/login','POST',{username:'demo',password:'demo'});setAuthenticated(true)}}>Enter public demo</button>:<form onSubmit={async e=>{e.preventDefault();const el=e.currentTarget;const f=new FormData(el);setBusy(true);setError('');try{await api('/auth/login','POST',{username:field(f,'user'),password:field(f,'password')});el.reset();setAuthenticated(true)}catch(e){setError((e as Error).message)}finally{setBusy(false)}}}><Input name="user" label="Username"/><Input name="password" label="Password" type="password"/>{error&&<p role="alert" className="error">{error}</p>}<button disabled={busy}>Sign in</button></form>}</Panel></div>}
 createRoot(document.getElementById('root')!).render(<App/>);

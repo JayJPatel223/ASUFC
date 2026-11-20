@@ -9,3 +9,21 @@
 .funding-programs input{width:auto;margin:0;accent-color:#702d42}
 textarea{width:100%;min-width:0;resize:vertical;border:1px solid #ccc5ca;border-radius:6px;padding:10px;font:inherit;color:#26242b}
 textarea:focus-visible{outline:3px solid #a888aa;outline-offset:2px}
+
+.skip-link{position:absolute;inset:10px auto auto 10px;z-index:2;background:white;color:#702d42;border:2px solid #702d42;border-radius:6px;padding:10px;transform:translateY(-150%)}
+.skip-link:focus{transform:none}
+.overview-actions{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.overview-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.balance-panel{border-top:3px solid #702d42}
+.balance-panel+ .balance-panel{border-top-color:#487d70}
+.balance-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.balance-metrics .metric{padding:12px;background:#faf8f9;box-shadow:none;min-width:0}
+.balance-metrics .metric strong{font-size:clamp(16px,2vw,24px);overflow-wrap:anywhere}
+.balance-panel .metric:first-child{grid-column:1/-1;background:#f4eef1}
+.balance-panel .metric:first-child strong{font-size:clamp(26px,3vw,36px)}
+.carry-totals{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:0}
+.carry-totals dd{margin:0;text-align:right;font-variant-numeric:tabular-nums}
+.funding-alerts{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+.funding-alerts li{display:grid;gap:4px;overflow-wrap:anywhere}
+.overview-link{margin-top:12px}
+@media(max-width:740px){.overview-columns{grid-template-columns:minmax(0,1fr);gap:0}}

@@ -60,6 +60,7 @@ Reviewed November 20, 2026 against the staff branch based on `6ead0dd`. Sources,
 | `backend/Dockerfile` | Upgrades pip, then installs requirements. Copies the app and tests explicitly. Base image digest pinning is pending. |
 | `deploy/Dockerfile` | Uses the lockfile for the production frontend and serves the build through Caddy. Base image digest pinning is pending. |
 | `docker-compose.yml` | Local services keep PostgreSQL internal and the API bound to loopback. |
+| `docker-compose.staff.yml` | Local staff gateway binds to loopback. The API and PostgreSQL ports stay unpublished. CI verifies the binding and staff authentication. |
 | `docker-compose.production.yml` | Caddy exposes HTTPS and the override removes the direct API port. |
 | `deploy/Caddyfile` | Same-origin API, request bounds and security headers. Actual public TLS validation requires an approved host. |
 | `deploy/asufc-backup.service` | Template provides a restricted umask, path and service account. Host-specific paths and access are pending. |

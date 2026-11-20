@@ -5,6 +5,8 @@ test('create funding and budget, spend, report, reconcile and void',async({page,
  await page.getByLabel('Password',{exact:true}).fill(process.env.STAFF_PASSWORD!);
  await page.getByRole('button',{name:'Sign in'}).click();
  await page.getByRole('button',{name:'Funding & grants',exact:true}).click();
+ await expect(page.getByRole('heading', {name: 'Funding & grants', exact: true})).toBeFocused();
+ await expect(page.getByRole('button', {name: 'Funding & grants', exact: true})).toHaveAttribute('aria-current', 'page');
  const grant=page.locator('section').filter({has:page.getByRole('heading',{name:'Add funding',exact:true})});
  await grant.getByLabel('Funding source',{exact:true}).fill('Browser fictional grant');
  await grant.getByLabel('Total award (CAD)').fill('1000');
@@ -60,8 +62,11 @@ test('create funding and budget, spend, report, reconcile and void',async({page,
  await page.getByRole('button',{name:'Confirm and save purchase'}).click();
  await expect(page.getByText('Record saved successfully.')).toBeVisible();
  await page.getByRole('button',{name:'Overview',exact:true}).click();
- await expect(page.locator('.metric').filter({hasText:'Cash remaining'})).toContainText('750.00');
- await page.getByRole('button',{name:'Reports',exact:true}).click();
+ await expect(page.getByRole('region', {name: 'Cash', exact: true}).locator('.metric').filter({hasText:'Cash remaining'})).toContainText('750.00');
+ await expect(page.getByRole('region', {name: 'Purchasing credits'})).toContainText('Credit received');
+ await expect(page.getByRole('region', {name: 'Expected and unallocated funding'})).toContainText('Expected cash');
+ await expect(page.getByRole('cell', {name: 'Browser fictional shop', exact: true})).toBeVisible();
+ await page.getByRole('button',{name:'Open spending reports',exact:true}).click();
  await expect(page.locator('.metric').filter({hasText:'Cash spent'})).toContainText('250.00');
  await page.getByLabel('From',{exact:true}).fill('2026-11-02');
  await expect(page.locator('.metric').filter({hasText:'Matching purchases'})).toContainText('0');
@@ -81,4 +86,5 @@ test('create funding and budget, spend, report, reconcile and void',async({page,
  await expect(page.getByRole('row').filter({hasText:'Browser fictional shop'})).toContainText('voided');
  await page.getByRole('button',{name:'Overview',exact:true}).click();
  await expect(page.locator('.metric').filter({hasText:'Cash remaining'})).toContainText('1,000.00');
+ await expect(page.getByText('No confirmed purchases for this year.')).toBeVisible();
 });

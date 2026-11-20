@@ -53,7 +53,7 @@ test('public build loads and simulates financial workflows without API traffic',
  ]) {
   await expect(page.locator('.metric').filter({hasText:label})).toContainText(amount);
  }
- await page.getByRole('button',{name:'Transactions',exact:true}).click();
+ await page.getByRole('button',{name:'Record a purchase',exact:true}).click();
  await page.getByLabel('Purchase date').fill('2026-10-01');
  await page.getByLabel('Supplier',{exact:true}).fill('Demo test shop');
  await page.getByLabel('Purchase type',{exact:true}).fill('Groceries');

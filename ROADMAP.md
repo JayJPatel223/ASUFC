@@ -4,7 +4,7 @@
 | --- | --- |
 | Public Pages | The dedicated workflow builds a fictional demo and deploys only the compiled bundle. Verify the current artifact at the public URL in Chromium, including demo entry, seed balances, the expense flow, reload reset, console errors and backend isolation. |
 | Repository review | Review each source, test, deployment and documentation file. Record evidence, resolve verified regressions and review dependency locks, reproducible builds and configuration consistency. |
-| Staff interface | Improve everyday navigation, balances, forms, reports and feedback. Verify keyboard use and desktop, tablet and mobile layouts. |
+| Staff interface | The private development profile and overview are implemented. Continue improving financial forms, tables and error recovery. Expand keyboard and responsive verification across screens. |
 | Receipt files | Add authorized image and PDF upload and download, exact-duplicate detection, replacement history and encrypted backup coverage before using receipt files with real records. |
 | Financial analysis | Implement and test authorized deterministic financial queries using existing financial rules and year, program and funding scope. |
 | AI assistant and extraction | Evaluate provider and local options. Integrate only with approval, deterministic fallback and structured validation. Require staff approval of extracted data before any financial write. |

@@ -1,6 +1,6 @@
 # Architecture and requirements
 
-The React staff interface calls same-origin FastAPI routes through Caddy in HTTPS deployments. FastAPI uses Psycopg and parameterized PostgreSQL queries. One designated staff account uses salted scrypt credentials and opaque server-side sessions. The production profile requires secure cookies and keeps the API service off the public network. The public Pages build uses a fictional in-memory transport.
+The React staff interface calls same-origin FastAPI routes through Caddy. FastAPI uses Psycopg and parameterized PostgreSQL queries. One designated staff account uses salted scrypt credentials and opaque server-side sessions. The development staff profile publishes only a loopback gateway and keeps its PostgreSQL data in a dedicated Compose project. The production profile requires HTTPS and secure cookies. The public Pages build uses a fictional in-memory transport.
 
 Funding receipts distinguish confirmed funds from expected awards. Cash and purchasing credits have separate balances. A budget reserves confirmed funding for a program. Purchase allocations must add up to the purchase total in integer cents. The server checks the program, supplier, purchase type, remaining balances, expiry, and academic year for each allocation. Allocation suggestions apply the same eligibility checks and require staff confirmation.
 
