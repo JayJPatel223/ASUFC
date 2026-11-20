@@ -283,6 +283,43 @@ def allocate_suggestion(p: SuggestionRequest):
 class ChangeReason(BaseModel):
     reason: str = Field(min_length=1,max_length=1000)
 
+class FundingExpiryChange(ChangeReason):
+    expiry: date | None
+
+@router.patch("/funding/{funding_id}/expiry")
+def change_funding_expiry(funding_id: int, change: FundingExpiryChange):
+    reason = change.reason.strip()
+    if not reason:
+        bad("Reason required")
+
+    with db() as c:
+        funding = c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE", (funding_id,)).fetchone()
+        if not funding:
+            raise HTTPException(404, "Unknown funding")
+        if funding["expiry"] == change.expiry:
+            return funding
+        if c.execute(
+            "SELECT 1 FROM active_funding_transfer WHERE source_id=%s OR destination_id=%s",
+            (funding_id, funding_id),
+        ).fetchone():
+            bad("Reverse active transfers before changing expiry")
+        if change.expiry and c.execute(
+            """SELECT 1 FROM active_allocation a
+               JOIN budget b ON b.id=a.budget_id
+               JOIN purchase p ON p.id=a.purchase_id
+               WHERE b.funding_id=%s AND p.purchase_date>%s""",
+            (funding_id, change.expiry),
+        ).fetchone():
+            bad("Expiry conflicts with existing spending")
+
+        updated = c.execute(
+            "UPDATE funding SET expiry=%s WHERE id=%s RETURNING *", (change.expiry, funding_id)
+        ).fetchone()
+        audit(c, "expiry_changed", "funding", funding_id, {
+            "before": funding["expiry"], "after": change.expiry, "reason": reason,
+        })
+        return updated
+
 class BudgetChange(ChangeReason):
     cents: int = Field(ge=0,le=10**12)
 

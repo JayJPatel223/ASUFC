@@ -1,6 +1,6 @@
 """Destructive tests against an explicitly designated disposable database."""
 import os
-from datetime import date
+from datetime import date, timedelta
 import pytest
 
 pytestmark = pytest.mark.skipif(os.getenv("ASUFC_TEST_DATABASE") != "1", reason="Requires disposable PostgreSQL database")
@@ -127,6 +127,9 @@ def test_carry_forward_conservation(client):
     dest=rows[t["destination_id"]]
     assert dest["remaining_cents"]==30000 and dest["received_cents"]==0
     assert dest["eligible_supplier"]=="Test"
+    expiry_change = dict(expiry="2028-06-30", reason="Updated grant terms")
+    assert client.patch(f"/funding/{f['id']}/expiry", json=expiry_change).status_code == 422
+    assert client.patch(f"/funding/{dest['id']}/expiry", json=expiry_change).status_code == 422
     assert client.get(f"/funding/{dest['id']}/receipts").json()==[]
     assert client.get("/dashboard",params={"year":"2027-2028"}).json()["funding"][0]["carried_in"]==30000
     assert client.post(url,json=payload|{"cents":70001}).status_code==422
@@ -217,6 +220,34 @@ def test_manual_duplicate_review_and_period_edit(client):
     assert client.patch(url,json=dict(name="Fall term",starts_on="2026-09-01",ends_on="2026-12-20",reason="Calendar correction")).status_code==200
     assert client.patch("/academic-years/2026-2027",json=dict(starts_on="2026-10-01",ends_on="2027-08-31",reason="Test")).status_code==422
     assert client.patch("/academic-years/2026-2027",json=dict(starts_on="2026-08-01",ends_on="2027-08-31",reason="Calendar correction")).status_code==200
+
+def test_funding_expiry_can_be_edited_with_audit(client):
+    fund = create(client, "/funding", dict(
+        name="Fictional expiring grant", academic_year="2026-2027", kind="cash",
+        expected_cents=10_000, received_cents=10_000,
+    ))
+    budget = create(client, "/budgets", dict(funding_id=fund["id"], program_code="ASUFCGR", cents=10_000))
+    today = date.today()
+    tomorrow = (today + timedelta(days=1)).isoformat()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    url = f"/funding/{fund['id']}/expiry"
+    assert client.patch(url, json=dict(expiry=tomorrow, reason=" ")).status_code == 422
+    response = client.patch(url, json=dict(expiry=tomorrow, reason="Grant deadline confirmed"))
+    assert response.status_code == 200
+    assert response.json()["expiry"] == tomorrow
+    assert client.get("/budgets").json()[0]["expiry"] == tomorrow
+    purchase = dict(purchase_date=today.isoformat(), supplier="Shop", purchase_type="Food", cents=500,
+                    allocations=[dict(budget_id=budget["id"], cents=500)])
+    assert client.post("/transactions", json=purchase | {"purchase_date": (today + timedelta(days=2)).isoformat()}).status_code == 422
+    create(client, "/transactions", purchase)
+    assert client.patch(url, json=dict(expiry=yesterday, reason="Would invalidate spending")).status_code == 422
+    assert client.patch(url, json=dict(expiry=None, reason="Deadline removed by funder")).status_code == 200
+    assert client.get("/funding").json()[0]["expiry"] is None
+    events = [event["details"] for event in client.get("/audit").json() if event["action"] == "expiry_changed"]
+    assert events == [
+        {"before": tomorrow, "after": None, "reason": "Deadline removed by funder"},
+        {"before": None, "after": tomorrow, "reason": "Grant deadline confirmed"},
+    ]
 
 def test_purchase_type_restriction(client):
     f=create(client,"/funding",dict(name="Restricted",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))

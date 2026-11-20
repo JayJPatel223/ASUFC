@@ -11,6 +11,13 @@ test('create funding and budget, spend, report, reconcile and void',async({page,
  await grant.getByLabel('Confirmed received (CAD)').fill('1000');
  await grant.getByRole('button',{name:'Save funding'}).click();
  await expect(page.getByText('Record saved successfully.')).toBeVisible();
+ const expiryForm = page.locator('section').filter({has: page.getByRole('heading', {name: 'Update funding expiry'})});
+ const source = expiryForm.getByLabel('Funding source');
+ await source.selectOption({label: 'Browser fictional grant · No expiry recorded'});
+ await expiryForm.getByLabel('New expiry date (leave blank to clear)').fill('2099-12-31');
+ await expiryForm.getByLabel('Reason').fill('Fictional grant deadline confirmed');
+ await expiryForm.getByRole('button', {name: 'Save expiry'}).click();
+ await expect(source.locator('option', {hasText: 'Browser fictional grant'})).toHaveText('Browser fictional grant · Expires 2099-12-31');
  await page.getByRole('button',{name:'Programs & budgets',exact:true}).click();
  const budget=page.locator('section').filter({has:page.getByRole('heading',{name:'Allocate funding to a program',exact:true})});
  const grantOption=budget.getByLabel('Funding source').locator('option').filter({hasText:'Browser fictional grant'});
@@ -32,6 +39,10 @@ test('create funding and budget, spend, report, reconcile and void',async({page,
  await page.getByRole('button',{name:'Overview',exact:true}).click();
  await expect(page.locator('.metric').filter({hasText:'Cash remaining'})).toContainText('750.00');
  await page.getByRole('button',{name:'Reports',exact:true}).click();
+ await expect(page.locator('.metric').filter({hasText:'Cash spent'})).toContainText('250.00');
+ await page.getByLabel('From',{exact:true}).fill('2026-11-02');
+ await expect(page.locator('.metric').filter({hasText:'Matching purchases'})).toContainText('0');
+ await page.getByRole('button',{name:'Clear report dates'}).click();
  await expect(page.locator('.metric').filter({hasText:'Cash spent'})).toContainText('250.00');
  const downloaded=page.waitForEvent('download');
  await page.getByRole('button',{name:'Download Excel report'}).click();
