@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS semester (
 );
 
 ALTER TABLE funding ADD COLUMN IF NOT EXISTS carry_eligible boolean NOT NULL DEFAULT false;
+ALTER TABLE funding ADD COLUMN IF NOT EXISTS carry_prohibited boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS funding_transfer (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  source_id bigint NOT NULL REFERENCES funding(id),
@@ -98,13 +99,6 @@ CREATE TABLE IF NOT EXISTS funding_transfer (
  created_at timestamptz NOT NULL DEFAULT now(),
  CHECK(source_id<>destination_id)
 );
-CREATE OR REPLACE VIEW funding_capacity AS
- SELECT f.*, COALESCE(i.cents,0) AS carried_in_cents, COALESCE(o.cents,0) AS carried_out_cents,
- f.received_cents + COALESCE(i.cents,0)-COALESCE(o.cents,0) AS capacity_cents
- FROM funding f
- LEFT JOIN (SELECT destination_id,sum(cents) AS cents FROM funding_transfer GROUP BY destination_id) i ON i.destination_id=f.id
- LEFT JOIN (SELECT source_id,sum(cents) AS cents FROM funding_transfer GROUP BY source_id) o ON o.source_id=f.id;
-
 ALTER TABLE budget DROP CONSTRAINT IF EXISTS budget_cents_check;
 ALTER TABLE budget ADD CONSTRAINT budget_cents_check CHECK(cents >= 0);
 
@@ -122,8 +116,10 @@ CREATE TABLE IF NOT EXISTS funding_transfer_void (
 CREATE OR REPLACE VIEW active_funding_transfer AS
  SELECT t.* FROM funding_transfer t LEFT JOIN funding_transfer_void v ON v.transfer_id=t.id WHERE v.transfer_id IS NULL;
 CREATE OR REPLACE VIEW funding_capacity AS
- SELECT f.*, COALESCE(i.cents,0) AS carried_in_cents, COALESCE(o.cents,0) AS carried_out_cents,
- f.received_cents + COALESCE(i.cents,0)-COALESCE(o.cents,0) AS capacity_cents
+ SELECT f.id,f.name,f.academic_year,f.kind,f.expected_cents,f.received_cents,f.expiry,f.eligible_program,
+ f.eligible_supplier,f.organization,f.source_type,f.recurring,f.expected_date,f.notes,f.carry_eligible,
+ COALESCE(i.cents,0) AS carried_in_cents, COALESCE(o.cents,0) AS carried_out_cents,
+ f.received_cents + COALESCE(i.cents,0)-COALESCE(o.cents,0) AS capacity_cents, f.carry_prohibited
  FROM funding f
  LEFT JOIN (SELECT destination_id,sum(cents) AS cents FROM active_funding_transfer GROUP BY destination_id) i ON i.destination_id=f.id
  LEFT JOIN (SELECT source_id,sum(cents) AS cents FROM active_funding_transfer GROUP BY source_id) o ON o.source_id=f.id;
@@ -178,3 +174,17 @@ CREATE TABLE IF NOT EXISTS purchase_receipt_file (
  CHECK ((replaces_id IS NULL) = (replacement_reason IS NULL))
 );
 CREATE INDEX IF NOT EXISTS purchase_receipt_file_purchase_idx ON purchase_receipt_file(purchase_id,id);
+
+CREATE TABLE IF NOT EXISTS purchase_intake (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ academic_year text NOT NULL REFERENCES academic_period(academic_year),
+ program_code text NOT NULL REFERENCES program(code),
+ purchase_date date NOT NULL,
+ supplier text NOT NULL,
+ purchase_type text NOT NULL,
+ description text NOT NULL,
+ cents bigint NOT NULL CHECK(cents > 0),
+ notes text NOT NULL,
+ verify_charge boolean NOT NULL,
+ confirmed_purchase_id bigint UNIQUE REFERENCES purchase(id)
+);

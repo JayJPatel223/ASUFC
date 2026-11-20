@@ -41,6 +41,8 @@ def launch(command, state, needs_setup, restore=None):
         try:
             event = events.get(timeout=90)
             if needs_setup:
+                if event["status"] == "error" and (state / "postgres.log").is_file():
+                    print((state / "postgres.log").read_text(encoding="utf-8", errors="replace"))
                 assert event["status"] == "setup_required", event
                 process.stdin.write(json.dumps({"password": "short"}) + "\n")
                 process.stdin.flush()
@@ -118,15 +120,34 @@ def verify(base, record, backup=None):
 
     assert api("/auth/login", {"username": "staff", "password": PASSWORD})["username"] == "staff"
     if record:
-        source = api("/funding", {
-            "name": "Fictional offline grant", "academic_year": YEAR, "kind": "cash",
-            "expected_cents": 12000, "received_cents": 10000,
-        })
+        source = {"name": "Fictional offline grant", "academic_year": YEAR, "kind": "cash",
+                  "expected_cents": 12000, "received_cents": 10000, "carry_status": "prohibited"}
+        draft = {"program_code": "ASUFCGR", "purchase_date": "2026-11-04", "supplier": "Example Shop",
+                 "purchase_type": "Food", "cents": 1300, "verify_charge": True}
+        setup = {
+            "version": 1, "period": {"academic_year": YEAR, "starts_on": "2026-07-01", "ends_on": "2027-06-30"},
+            "semesters": [{"name": "Example fall", "starts_on": "2026-09-09", "ends_on": "2026-12-20"}],
+            "funding": [source], "purchases": [draft, draft | {"supplier": "Another example shop"}],
+        }
+        reject("/api/staff-setup", 422, setup | {"funding": [source | {"received_cents": 13000}]})
+        assert not api("/academic-years")
+        assert api("/staff-setup", setup)["pending_purchases"] == 2
+        reject("/api/staff-setup", 409, setup)
+        assert not api("/transactions")
+        first, second = api("/purchase-intake?year=" + YEAR)
+        assert first["verify_charge"] and second["verify_charge"]
+        source, = api("/funding")
+        assert source["carry_prohibited"] and not source["carry_eligible"]
         budget = api("/budgets", {"funding_id": source["id"], "program_code": "ASUFCGR", "cents": 5000})
-        purchase = api("/transactions", {
+        request = {
             "purchase_date": "2026-11-04", "supplier": "Example Shop", "purchase_type": "Food",
             "cents": 1250, "allocations": [{"budget_id": budget["id"], "cents": 1250}],
-        })
+        }
+        confirm = f"/purchase-intake/{first['id']}/confirm"
+        reject("/api" + confirm, 422, request)
+        request["verification"] = "Fictional statement checked"
+        purchase = api(confirm, request)
+        reject("/api" + confirm, 409, request)
         path = f"/transactions/{purchase['id']}/files"
         initial = {"name": "Fictional receipt.png", "content": base64.b64encode(PNG).decode()}
         reject("/api" + path, 422, initial | {"name": "../receipt.png"})
@@ -142,6 +163,11 @@ def verify(base, record, backup=None):
     funds = api("/funding")
     assert len(funds) == 1 and funds[0]["remaining_cents"] == 8750 and funds[0]["received_cents"] == 10000
     assert api("/reports/reconciliation?year=" + YEAR)["ok"]
+    assert api("/reports/financial-insights?year=" + YEAR)["spending"]["totals"] == report["totals"]
+    breakfast = api("/reports/financial-insights?year=" + YEAR + "&program=ASUFCFSBP")
+    assert not breakfast["funding"] and breakfast["spending"]["purchase_count"] == 0
+    pending, = api("/purchase-intake?year=" + YEAR)
+    assert pending["supplier"] == "Another example shop" and pending["cents"] == 1300
     purchase, = api("/transactions")
     path = f"/transactions/{purchase['id']}/files"
     current, original = api(path)

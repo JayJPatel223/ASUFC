@@ -56,16 +56,21 @@ def postgres_tool(bin_dir, name, *arguments):
             environment.pop("LD_LIBRARY_PATH", None)
         else:
             environment["LD_LIBRARY_PATH"] = original_path
-    subprocess.run(
-        [str(binary), *map(str, arguments)],
-        stdin=subprocess.DEVNULL,
-        stdout=sys.stderr,
-        stderr=sys.stderr,
-        check=True,
-        timeout=60,
-        env=environment,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    try:
+        subprocess.run(
+            [str(binary), *map(str, arguments)],
+            stdin=subprocess.DEVNULL,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            check=True,
+            timeout=60,
+            env=environment,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        detail = error.strerror if isinstance(error, OSError) else getattr(error, "returncode", "timeout")
+        print(f"Local database command {name} failed ({type(error).__name__}: {detail})", file=sys.stderr, flush=True)
+        raise
 
 
 def allocate_port():

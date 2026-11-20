@@ -27,3 +27,8 @@ textarea:focus-visible{outline:3px solid #a888aa;outline-offset:2px}
 .funding-alerts li{display:grid;gap:4px;overflow-wrap:anywhere}
 .overview-link{margin-top:12px}
 @media(max-width:740px){.overview-columns{grid-template-columns:minmax(0,1fr);gap:0}}
+.spending-trends meter { display: block; width: min(140px, 100%); height: 10px; margin-top: 4px; }
+.spending-trends .cash::-webkit-meter-optimum-value { background: #702d42; }
+.spending-trends .credit::-webkit-meter-optimum-value { background: #365a64; }
+.spending-trends .cash::-moz-meter-bar { background: #702d42; }
+.spending-trends .credit::-moz-meter-bar { background: #365a64; }

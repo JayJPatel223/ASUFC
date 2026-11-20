@@ -105,6 +105,7 @@ async def no_cache(request,call_next):
 ProgramCode = Annotated[str, Field(min_length=1, max_length=40)]
 SupplierName = Annotated[str, Field(min_length=1, max_length=200)]
 PurchaseType = Annotated[str, Field(min_length=1, max_length=100)]
+CarryStatus = Literal["unconfirmed", "prohibited", "allowed"]
 
 class Funding(BaseModel):
     name: str = Field(min_length=1,max_length=200)
@@ -122,6 +123,7 @@ class Funding(BaseModel):
     source_type: str = Field(default="",max_length=100)
     recurring: bool = False
     carry_eligible: bool = False
+    carry_status: CarryStatus | None = None
     expected_date: date | None = None
     notes: str = Field(default="",max_length=2000)
     received_on: date | None = None
@@ -209,32 +211,52 @@ def programs():
     with db() as c:
         return c.execute("SELECT * FROM program ORDER BY code").fetchall()
 
+class ProgramCreate(BaseModel):
+    code: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9&_-]{0,39}$")
+    name: str = Field(min_length=1, max_length=120)
+
+@router.post("/programs", status_code=201)
+def add_program(program: ProgramCreate):
+    name = program.name.strip()
+    if not name: bad("Enter a program name")
+    with db() as c:
+        row = c.execute("""INSERT INTO program(code,name) VALUES (%s,%s)
+            ON CONFLICT (code) DO NOTHING RETURNING *""", (program.code.upper(), name)).fetchone()
+        if not row: raise HTTPException(409, "That program code already exists")
+        audit(c, "program_created", "program", 0, row)
+        return row
+
 @router.post("/funding", status_code=201)
 def add_funding(f: Funding):
+    with db() as c:
+        return save_funding(c, f)
+
+def save_funding(c, f: Funding):
     if f.received_cents > f.expected_cents: bad("Received exceeds award")
     has_new_rules = any(getattr(f, field) is not None for field in ELIGIBILITY_FIELDS)
     if ((f.eligible_program and f.eligible_programs is not None)
         or (f.eligible_supplier and f.eligible_suppliers is not None)):
         bad("Use one form of each spending rule")
-    with db() as c:
-        validate_year_label(f.academic_year)
-        if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
-        if has_new_rules:
-            rules = normalize_eligibility(
-                f.eligible_programs if f.eligible_programs is not None else ([f.eligible_program] if f.eligible_program else []),
-                f.eligible_suppliers if f.eligible_suppliers is not None else ([f.eligible_supplier] if f.eligible_supplier else []),
-                f.eligible_purchase_types or [],
-            )
-            verify_eligible_programs(c, rules["eligible_programs"])
-        created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes,carry_eligible)
-         VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s,%(carry_eligible)s) RETURNING *""",f.model_dump()).fetchone()
-        if has_new_rules:
-            store_funding_eligibility(c, created["id"], rules)
-        if f.received_cents:
-            add_receipt(c,created["id"],f.received_cents,f.received_on)
-        created = funding_rule_fields(created | funding_eligibility(c, created["id"]))
-        audit(c,"created","funding",created["id"],created)
-        return created
+    validate_year_label(f.academic_year)
+    if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
+    if has_new_rules:
+        rules = normalize_eligibility(
+            f.eligible_programs if f.eligible_programs is not None else ([f.eligible_program] if f.eligible_program else []),
+            f.eligible_suppliers if f.eligible_suppliers is not None else ([f.eligible_supplier] if f.eligible_supplier else []),
+            f.eligible_purchase_types or [],
+        )
+        verify_eligible_programs(c, rules["eligible_programs"])
+    carry_status = f.carry_status or ("allowed" if f.carry_eligible else "unconfirmed")
+    created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes,carry_eligible,carry_prohibited)
+     VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s,%(carry_eligible)s,%(carry_prohibited)s) RETURNING *""",
+     f.model_dump() | {"carry_eligible": carry_status == "allowed", "carry_prohibited": carry_status == "prohibited"}).fetchone()
+    if has_new_rules:
+        store_funding_eligibility(c, created["id"], rules)
+    if f.received_cents:
+        add_receipt(c,created["id"],f.received_cents,f.received_on)
+    created = funding_rule_fields(created | funding_eligibility(c, created["id"]))
+    audit(c,"created","funding",created["id"],created)
+    return created
 
 @router.patch("/funding/{funding_id}/received")
 def confirm_funding(funding_id: int, r: Receipt):
@@ -433,7 +455,7 @@ def audit_history():
     with db() as c:
         return c.execute("SELECT * FROM audit_event ORDER BY id DESC LIMIT 500").fetchall()
 
-def report_rows(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
+def select_report_rows(c, year, start=None, end=None, program=None, supplier=None, funding_id=None, purchase_type=None):
     from .reporting import validate_period
     validate_year_label(year)
     try:
@@ -447,13 +469,41 @@ def report_rows(year: str = "2026-2027", start: date | None = None, end: date | 
         if value is not None:
             query += " AND " + clause
             params.append(value)
+    return c.execute(query + " ORDER BY p.purchase_date,p.id,b.id",params).fetchall()
+
+def report_rows(year, start=None, end=None, program=None, supplier=None, funding_id=None, purchase_type=None):
     with db() as c:
-        return c.execute(query + " ORDER BY p.purchase_date,p.id,b.id",params).fetchall()
+        return select_report_rows(c, year, start, end, program, supplier, funding_id, purchase_type)
 
 @router.get("/reports/spending")
 def spending_report(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
     from .reporting import summarize
     return summarize(report_rows(year,start,end,program,supplier,funding_id,purchase_type))
+
+@router.get("/reports/financial-insights")
+def financial_insights(year: str, program: ProgramCode | None = None):
+    from .analysis import analyze
+    from .reporting import summarize
+    validate_year_label(year)
+    with db() as c:
+        c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        params = [year]
+        filters = " WHERE f.academic_year=%s"
+        if program is not None:
+            if not c.execute("SELECT 1 FROM program WHERE code=%s", (program,)).fetchone():
+                bad("Unknown program")
+            filters += " AND b.program_code=%s"
+            params.append(program)
+        budgets = c.execute(BUDGET_QUERY + filters, params).fetchall()
+        sources = []
+        if program is None:
+            sources = c.execute("""SELECT f.id,f.name,f.kind,f.capacity_cents,f.expiry,f.expected_cents,f.received_cents,
+                f.capacity_cents-coalesce((SELECT sum(a.cents) FROM active_allocation a
+                JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents
+                FROM funding_capacity f WHERE f.academic_year=%s ORDER BY f.expiry NULLS LAST,f.id""", (year,)).fetchall()
+        period = c.execute("SELECT starts_on,ends_on FROM academic_period WHERE academic_year=%s", (year,)).fetchone() or {}
+        spending = summarize(select_report_rows(c, year, program=program))
+        return analyze(spending, budgets, sources, period, date.today())
 
 @router.get("/reports/spending.xlsx")
 def spending_export(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):
@@ -506,6 +556,106 @@ class SemesterPeriod(BaseModel):
     starts_on: date
     ends_on: date
 
+class IntakePurchase(BaseModel):
+    purchase_date: date
+    program_code: ProgramCode
+    supplier: SupplierName
+    purchase_type: PurchaseType
+    description: str = Field(default="", max_length=1000)
+    cents: int = Field(gt=0, le=10**12)
+    notes: str = Field(default="", max_length=1000)
+    verify_charge: bool = False
+
+class StaffSetup(BaseModel):
+    version: Literal[1]
+    period: AcademicPeriod
+    semesters: list[SemesterPeriod] = Field(max_length=12)
+    funding: list[Funding] = Field(max_length=50)
+    purchases: list[IntakePurchase] = Field(max_length=250)
+
+@router.post("/staff-setup", status_code=201)
+def apply_staff_setup(setup: StaffSetup):
+    period = setup.period
+    year = period.academic_year
+    validate_year_label(year)
+    if not period.starts_on <= period.ends_on or period.starts_on.year != int(year[:4]) or period.ends_on.year != int(year[5:]):
+        bad("Reporting dates must be ordered and match the academic year")
+    if any(fund.academic_year != year for fund in setup.funding):
+        bad("All starter funding must use the selected academic year")
+    names = [fund.name.strip().casefold() for fund in setup.funding]
+    if "" in names or len(set(names)) != len(names):
+        bad("Starter funding names must be present and unique")
+    semesters = sorted(setup.semesters, key=lambda term: term.starts_on)
+    term_names = [term.name.strip().casefold() for term in semesters]
+    if "" in term_names or len(set(term_names)) != len(term_names) or any(
+        not period.starts_on <= term.starts_on <= term.ends_on <= period.ends_on for term in semesters
+    ) or any(left.ends_on >= right.starts_on for left, right in zip(semesters, semesters[1:])):
+        bad("Semester names and dates must be distinct and fit the reporting year")
+    if any(not period.starts_on <= row.purchase_date <= period.ends_on for row in setup.purchases):
+        bad("Every starter purchase must fit the reporting year")
+    with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663001)")
+        c.execute("LOCK TABLE funding IN EXCLUSIVE MODE")
+        c.execute("LOCK TABLE academic_period IN SHARE ROW EXCLUSIVE MODE")
+        if c.execute("SELECT 1 FROM academic_period UNION ALL SELECT 1 FROM funding LIMIT 1").fetchone():
+            raise HTTPException(409, "The starter file is for a new ledger with no funding or reporting years")
+        for row in setup.purchases:
+            if not c.execute("SELECT 1 FROM program WHERE code=%s", (row.program_code,)).fetchone():
+                bad("A starter purchase uses an unknown program")
+            if not row.supplier.strip() or not row.purchase_type.strip():
+                bad("Enter a supplier and purchase type for every starter purchase")
+        saved_period = c.execute("""INSERT INTO academic_period(academic_year,starts_on,ends_on) VALUES
+            (%(academic_year)s,%(starts_on)s,%(ends_on)s) RETURNING *""", period.model_dump()).fetchone()
+        audit(c, "created", "academic_year", saved_period["id"], saved_period)
+        for term in semesters:
+            saved_term = c.execute("""INSERT INTO semester(period_id,name,starts_on,ends_on) VALUES
+                (%s,%s,%s,%s) RETURNING *""", (saved_period["id"], term.name.strip(), term.starts_on, term.ends_on)).fetchone()
+            audit(c, "created", "semester", saved_term["id"], saved_term)
+        for grant in setup.funding:
+            save_funding(c, grant)
+        for row in setup.purchases:
+            c.execute("""INSERT INTO purchase_intake(academic_year,program_code,purchase_date,supplier,purchase_type,
+                description,cents,notes,verify_charge) VALUES (%(year)s,%(program_code)s,%(purchase_date)s,%(supplier)s,
+                %(purchase_type)s,%(description)s,%(cents)s,%(notes)s,%(verify_charge)s)""", row.model_dump() | {"year": year})
+        stats = {"funding_sources": len(setup.funding), "pending_purchases": len(setup.purchases), "academic_year": year}
+        audit(c, "starter_applied", "academic_year", saved_period["id"], stats)
+        return stats
+
+@router.get("/purchase-intake")
+def purchase_intake(year: str):
+    validate_year_label(year)
+    with db() as c:
+        return c.execute("""SELECT * FROM purchase_intake WHERE academic_year=%s
+            AND confirmed_purchase_id IS NULL ORDER BY purchase_date,id""", (year,)).fetchall()
+
+class ConfirmIntake(Purchase):
+    verification: str = Field(default="", max_length=1000)
+
+@router.post("/purchase-intake/{intake_id}/confirm", status_code=201)
+def confirm_intake(intake_id: int, p: ConfirmIntake):
+    with db() as c:
+        c.execute("SELECT pg_advisory_xact_lock(2663001)")
+        draft = c.execute("SELECT * FROM purchase_intake WHERE id=%s FOR UPDATE", (intake_id,)).fetchone()
+        if not draft:
+            raise HTTPException(404, "Pending purchase not found")
+        if draft["confirmed_purchase_id"] is not None:
+            raise HTTPException(409, "This pending purchase was already entered")
+        if (draft["verify_charge"] or draft["cents"] != p.cents or draft["purchase_date"] != p.purchase_date) and not p.verification.strip():
+            bad("Record how the purchase date and final charge were verified")
+        ids = set(row.budget_id for row in p.allocations)
+        rows = c.execute("""SELECT b.id,b.program_code,f.academic_year FROM budget b JOIN funding f ON f.id=b.funding_id
+            WHERE b.id=ANY(%s)""", (list(ids),)).fetchall()
+        if len(rows) != len(ids) or any(
+            row["program_code"] != draft["program_code"] or row["academic_year"] != draft["academic_year"] for row in rows
+        ):
+            bad("Choose budgets in the pending purchase's program and academic year")
+        purchase = save_purchase(c, p)
+        c.execute("UPDATE purchase_intake SET confirmed_purchase_id=%s WHERE id=%s", (purchase["id"], intake_id))
+        audit(c, "starter_purchase_confirmed", "purchase", purchase["id"], {
+            "intake_id": intake_id, "previous_cents": draft["cents"], "verification": p.verification.strip(),
+        })
+        return purchase
+
 @router.get("/academic-years")
 def academic_years():
     with db() as c:
@@ -539,7 +689,8 @@ def capacity(c,funding_id):
     return c.execute("SELECT capacity_cents FROM funding_capacity WHERE id=%s",(funding_id,)).fetchone()["capacity_cents"]
 
 class CarryPermission(ChangeReason):
-    eligible: bool
+    eligible: bool | None = None
+    status: CarryStatus | None = None
 
 class CarryTransfer(ChangeReason):
     destination_year: str
@@ -548,11 +699,16 @@ class CarryTransfer(ChangeReason):
 @router.patch("/funding/{funding_id}/carry-permission")
 def carry_permission(funding_id: int,p: CarryPermission):
     if not p.reason.strip(): bad("Reason required")
+    if (p.status is None) == (p.eligible is None): bad("Choose one carry-forward status")
+    status = p.status or ("allowed" if p.eligible else "prohibited")
     with db() as c:
         old=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
         if not old: raise HTTPException(404,"Unknown funding")
-        row=c.execute("UPDATE funding SET carry_eligible=%s WHERE id=%s RETURNING *",(p.eligible,funding_id)).fetchone()
-        audit(c,"carry_permission_changed","funding",funding_id,{"before":old["carry_eligible"],"after":p.eligible,"reason":p.reason.strip()})
+        row=c.execute("UPDATE funding SET carry_eligible=%s,carry_prohibited=%s WHERE id=%s RETURNING *",
+                      (status == "allowed", status == "prohibited", funding_id)).fetchone()
+        audit(c,"carry_permission_changed","funding",funding_id,{
+            "before": "allowed" if old["carry_eligible"] else "prohibited" if old["carry_prohibited"] else "unconfirmed",
+            "after": status, "reason": p.reason.strip()})
         return funding_rule_fields(row | funding_eligibility(c, funding_id))
 
 @router.post("/funding/{funding_id}/carry-forward",status_code=201)
@@ -562,6 +718,7 @@ def carry_forward(funding_id: int,p: CarryTransfer):
     with db() as c:
         source=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
         if not source: raise HTTPException(404,"Unknown funding")
+        if source["carry_prohibited"]: bad("This funding prohibits carry-forward")
         if not source["carry_eligible"]: bad("Grant carry-forward permission not confirmed")
         src=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(source["academic_year"],)).fetchone()
         dst=c.execute("SELECT * FROM academic_period WHERE academic_year=%s",(p.destination_year,)).fetchone()

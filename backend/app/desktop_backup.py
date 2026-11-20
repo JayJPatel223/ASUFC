@@ -16,7 +16,7 @@ TABLES = (
     "program", "funding", "budget", "purchase", "allocation", "purchase_void", "audit_event",
     "purchase_correction", "funding_receipt", "academic_period", "semester", "funding_transfer",
     "import_entry", "funding_transfer_void", "funding_purchase_type", "funding_eligibility",
-    "staff_credential", "purchase_receipt_file",
+    "staff_credential", "purchase_receipt_file", "purchase_intake",
 )
 
 
@@ -108,7 +108,8 @@ def restore_backup(connection, file, password):
     except (ValueError, UnicodeError):
         raise BackupError("The backup header could not be read") from None
     current = columns_by_table(connection)
-    if not isinstance(columns, dict) or set(columns) != set(TABLES) or any(
+    previous_tables = set(TABLES) - {"purchase_intake"}
+    if not isinstance(columns, dict) or set(columns) not in (set(TABLES), previous_tables) or any(
         not isinstance(fields, list) or not fields or any(not isinstance(field, str) for field in fields)
         or len(fields) != len(set(fields)) or not set(fields).issubset(current[table])
         for table, fields in columns.items()
@@ -120,6 +121,8 @@ def restore_backup(connection, file, password):
         sql.SQL(", ").join(sql.Identifier("public", table) for table in TABLES),
     ))
     for table in TABLES:
+        if table not in columns:
+            continue
         fields = columns[table]
         command = copy_command(table, fields, sql.SQL("FROM STDIN"))
         with connection.cursor().copy(command) as copy:
