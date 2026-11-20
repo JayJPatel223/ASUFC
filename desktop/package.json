@@ -1,0 +1,26 @@
+{
+  "name": "asufc-finance-desktop",
+  "version": "0.1.0",
+  "description": "ASUFC Finance offline staff workspace",
+  "author": "ASUFC Finance project",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "package": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "ca.asufc.finance",
+    "productName": "ASUFC Finance",
+    "artifactName": "ASUFC-Finance-${version}-${os}-${arch}.${ext}",
+    "directories": { "output": "release" },
+    "files": ["main.cjs", "preload.cjs", "setup.html", "setup.js", "setup.css"],
+    "extraResources": [{ "from": "runtime", "to": "runtime" }],
+    "win": { "target": "nsis" },
+    "mac": { "target": "dmg", "category": "public.app-category.finance" },
+    "linux": { "target": ["AppImage", "deb"], "category": "Office" }
+  }
+}

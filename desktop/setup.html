@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; form-action 'none'; base-uri 'none'">
+  <title>Set up ASUFC Finance</title>
+  <link rel="stylesheet" href="./setup.css">
+  <script src="./setup.js" defer></script>
+</head>
+<body>
+<main>
+  <h1>Set up ASUFC Finance</h1>
+  <p>Choose a password for the staff login on this computer. The username is <strong>staff</strong>.</p>
+  <form>
+    <label>New password
+      <input name="password" type="password" required minlength="16" maxlength="1024" autocomplete="new-password">
+    </label>
+    <label>Confirm password
+      <input name="confirmation" type="password" required minlength="16" maxlength="1024" autocomplete="new-password">
+    </label>
+    <p class="hint">Use at least 16 characters.</p>
+    <p id="error" role="alert"></p>
+    <button type="submit">Create staff login</button>
+  </form>
+</main>
+</body>
+</html>

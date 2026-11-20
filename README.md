@@ -14,6 +14,10 @@ Run `docker compose run --rm api python -m pytest` for backend unit tests. The P
 
 See docs/architecture.md and PROGRESS.md for limitations. No production readiness claim.
 
+## Offline desktop edition
+
+See the [offline desktop development guide](docs/offline-desktop.md) for the single-computer design and candidate build checks.
+
 ## Private staff workspace
 
 For a local workspace with fictional records, set the two passwords in your private Compose environment and run the staff profile from the repository root with Docker Compose 2.24.4 or newer.

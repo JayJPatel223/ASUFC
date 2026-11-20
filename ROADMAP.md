@@ -10,6 +10,7 @@
 | AI assistant and extraction | Evaluate provider and local options. Integrate only with approval, deterministic fallback and structured validation. Require staff approval of extracted data before any financial write. |
 | Forecasts | Assess history and document limitations before publishing labeled estimates. |
 | Release verification and documentation | Run the application, security and infrastructure suites against disposable data. Prepare the university report, diagrams, guides and presentation using verified implementation details. |
+| Offline distribution | Build and test Windows, macOS and Linux desktop installers for one staff computer. Verify offline installation, persistence, updates and offline backup and restore before handing over real records. |
 | Production | Obtain stakeholder approval for hosting, institutional access, policy and key custody. Verify the authorized environment and recovery before opening staff access. |
 
 Keep source-specific grant terms and unconfirmed academic reporting cutoffs explicit. Receipt retention, live record migration and third-party data processing require separate decisions.

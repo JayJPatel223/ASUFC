@@ -1,0 +1,206 @@
+"""Run the staff application and its database on the same offline computer."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import secrets
+import socket
+import subprocess
+import sys
+import threading
+from contextlib import asynccontextmanager, contextmanager
+
+from fastapi import FastAPI
+import psycopg
+from psycopg.conninfo import make_conninfo
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.staticfiles import StaticFiles
+import uvicorn
+
+from .credentials import validate_password
+from .main import app
+
+
+def announce(status, **details):
+    print(json.dumps({"status": status, **details}), flush=True)
+
+
+def load_database_password(state_dir, database_dir):
+    password_file = state_dir / "database-password"
+    if password_file.exists():
+        password = password_file.read_text(encoding="ascii").strip()
+        if len(password) != 64 or any(character not in "0123456789abcdef" for character in password):
+            raise ValueError("The local database configuration is damaged")
+        return password
+    if database_dir.exists():
+        raise ValueError("Restore the password file that belongs to the existing local database")
+    password = secrets.token_hex(32)
+    # The desktop installer places this directory inside the current user's app data.
+    with os.fdopen(os.open(password_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as output:
+        output.write(password + "\n")
+    return password
+
+
+def postgres_tool(bin_dir, name, *arguments):
+    binary = bin_dir / (name + (".exe" if os.name == "nt" else ""))
+    environment = os.environ.copy()
+    if sys.platform.startswith("linux") and getattr(sys, "frozen", False):
+        original_path = environment.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original_path is None:
+            environment.pop("LD_LIBRARY_PATH", None)
+        else:
+            environment["LD_LIBRARY_PATH"] = original_path
+    subprocess.run(
+        [str(binary), *map(str, arguments)],
+        stdin=subprocess.DEVNULL,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        check=True,
+        timeout=60,
+        env=environment,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+
+
+def allocate_port():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+@contextmanager
+def local_database(state_dir, bin_dir):
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    database_dir = state_dir / "ledger"
+    has_database = (database_dir / "PG_VERSION").is_file()
+    password = load_database_password(state_dir, database_dir)
+    if not has_database:
+        if database_dir.exists() and any(database_dir.iterdir()):
+            raise ValueError("The ledger directory is incomplete and needs recovery")
+        postgres_tool(
+            bin_dir, "initdb", "-D", database_dir, "-U", "asufc",
+            "--auth=scram-sha-256", "--encoding=UTF8", "--locale=C",
+            "--pwfile", state_dir / "database-password",
+        )
+    port = allocate_port()
+    server_options = f"-h 127.0.0.1 -p {port} -c unix_socket_directories="
+    postgres_tool(bin_dir, "pg_ctl", "-D", database_dir, "-l", state_dir / "postgres.log",
+                  "-w", "-t", "30", "-o", server_options, "start")
+    try:
+        # Use the private cluster even if the desktop was started from a shell
+        # whose PostgreSQL environment points elsewhere.
+        settings = {
+            "PGHOST": "127.0.0.1", "PGPORT": str(port), "PGUSER": "asufc",
+            "PGPASSWORD": password, "PGDATABASE": "postgres", "PGSSLMODE": "disable",
+        }
+        for key in tuple(os.environ):
+            if key.upper().startswith("PG"):
+                del os.environ[key]
+        os.environ.update(settings)
+        yield settings
+    finally:
+        postgres_tool(bin_dir, "pg_ctl", "-D", database_dir, "-m", "fast", "-w", "-t", "25", "stop")
+
+
+def prepare_staff_account(settings):
+    os.environ.update(STAFF_USER="staff", SESSION_SECURE="0")
+    os.environ.pop("STAFF_PASSWORD", None)
+    connection = make_conninfo(
+        host=settings["PGHOST"], port=settings["PGPORT"], user=settings["PGUSER"],
+        password=settings["PGPASSWORD"], dbname=settings["PGDATABASE"], sslmode="disable",
+    )
+    with psycopg.connect(connection) as database:
+        accounts_exist = database.execute("SELECT to_regclass('public.staff_credential')").fetchone()[0]
+        if accounts_exist and database.execute(
+            "SELECT 1 FROM staff_credential WHERE username=%s", ("staff",)
+        ).fetchone():
+            return True
+
+    announce("setup_required")
+    for line in sys.stdin:
+        try:
+            password = json.loads(line)["password"]
+            if not isinstance(password, str):
+                raise ValueError
+            validate_password(password)
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            announce("setup_error", message="Choose a unique password of 16 to 1024 characters.")
+        else:
+            os.environ["STAFF_PASSWORD"] = password
+            return True
+    return False
+
+
+def serve_staff(frontend_dir):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+
+        @asynccontextmanager
+        async def lifespan(_):
+            async with app.router.lifespan_context(app):
+                os.environ.pop("STAFF_PASSWORD", None)
+                yield
+
+        desktop_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
+        desktop_app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1"])
+        desktop_app.mount("/api", app)
+        desktop_app.mount("/", StaticFiles(directory=frontend_dir, html=True))
+
+        @desktop_app.middleware("http")
+        async def security_headers(request, call_next):
+            response = await call_next(request)
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+                "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            )
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            return response
+
+        class DesktopServer(uvicorn.Server):
+            async def startup(self, sockets=None):
+                await super().startup(sockets)
+                if self.started:
+                    announce("ready", port=port)
+
+        server = DesktopServer(uvicorn.Config(
+            desktop_app, http="h11", ws="none", loop="asyncio",
+            log_config=None, access_log=False, proxy_headers=False,
+        ))
+
+        def stop_when_launcher_exits():
+            sys.stdin.read()
+            server.should_exit = True
+
+        threading.Thread(target=stop_when_launcher_exits, daemon=True).start()
+        server.run(sockets=[listener])
+        if not server.started:
+            raise RuntimeError("The staff application did not start")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state-dir", required=True, type=Path)
+    parser.add_argument("--postgres-bin", required=True, type=Path)
+    parser.add_argument("--frontend", required=True, type=Path)
+    args = parser.parse_args()
+    try:
+        if not (args.frontend / "index.html").is_file():
+            raise ValueError("The staff application files are missing")
+        with local_database(args.state_dir.resolve(), args.postgres_bin.resolve()) as settings:
+            if prepare_staff_account(settings):
+                serve_staff(args.frontend.resolve())
+    except ValueError as error:
+        announce("error", message=str(error))
+        return 1
+    except (OSError, subprocess.SubprocessError, psycopg.Error, RuntimeError):
+        announce("error", message="The local ledger could not start. Check the application log or contact support.")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

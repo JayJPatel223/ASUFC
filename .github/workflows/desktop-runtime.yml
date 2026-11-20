@@ -1,0 +1,81 @@
+name: Offline staff runtime
+
+on:
+  push:
+    paths:
+      - '.github/workflows/desktop-runtime.yml'
+      - 'backend/**'
+      - 'desktop/**'
+      - 'frontend/**'
+      - 'scripts/desktop_backend.py'
+      - 'scripts/stage_desktop_runtime.py'
+      - 'scripts/verify_desktop_runtime.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-runtime:
+    name: Runtime on ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-24.04
+          - name: macOS Apple Silicon
+            os: macos-15
+          - name: macOS Intel
+            os: macos-15-intel
+          - name: Windows x64
+            os: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: python -m pip install --upgrade 'pip>=26.2,<27'
+      - run: python -m pip install -r backend/requirements.txt pyinstaller==6.22.3
+      - run: python scripts/stage_desktop_runtime.py --output desktop/runtime
+      - name: Verify persisted ledger and local reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          executable=desktop/runtime/asufc-backend/asufc-backend
+          if [ "${RUNNER_OS}" = Windows ]; then executable+=.exe; fi
+          python scripts/verify_desktop_runtime.py -- "$executable" --frontend desktop/runtime/frontend --postgres-bin desktop/runtime/postgres/bin
+      - run: npm ci
+        working-directory: desktop
+      - name: Verify first launch, sign-in and reopening the desktop window
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_OS}" = Linux ]; then
+            xvfb-run -a node frontend/e2e-desktop/verify.mjs
+          else
+            node frontend/e2e-desktop/verify.mjs
+          fi
+      - name: Package desktop candidate
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-candidate-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.dmg
+            desktop/release/*.AppImage
+            desktop/release/*.deb
