@@ -18,7 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
+      - run: npm ci
         working-directory: frontend
       - run: npm run build:pages
         working-directory: frontend
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install
+      - run: npm ci
       - run: npx playwright install --only-shell chromium
         timeout-minutes: 4
       - name: Verify the deployed demo in Chromium

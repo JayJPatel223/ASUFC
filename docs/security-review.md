@@ -10,11 +10,11 @@ Scope: development prototype, fictional records, source inspection and automated
 | Request protection | Same-origin API, no permissive CORS, required mutation header. Deployment must not introduce permissive CORS. |
 | Validation | Parameterized SQL; integer-cent financial rules; bounded imports and formula rejection. Validation responses no longer echo request inputs. |
 | Files | ZIP expansion and upload bounds, protected reports, formula-safe exported strings. Malformed-file fuzzing and independent review remain outstanding. |
-| Dependencies | Python audit clean on prior CI; npm identified Vite/esbuild issues. Vite updated to version recommended by audit. Re-audit and regression tests required before accepting fix. Dependency lockfile and image digest pinning remain needed for reproducible builds. |
+| Dependencies | Frontend dependency resolution is pinned by the npm lockfile. CI audits Python and JavaScript dependencies. Python transitive versions and container image digests still need a reproducibility decision. |
 | Deployment | Localhost Caddy smoke test passed (test certificate, bypassed trust verification). Real TLS, host configuration, secret provisioning and network rules require approval. Exclude secrets and financial artifacts from Docker build context. |
 | Recovery | Encrypted backup/restore and monitoring tests passed. Actual key custody, retention, offsite storage and alert routing require authorization. |
 | Finance | Database constraints, transaction locks, duplicate review, audit history and reconciliation. Audit log is not tamper-evident against privileged database operators. |
 
 Release gates: all CI jobs green, known vulnerabilities remediated or expressly assessed, stakeholder financial acceptance, production configuration review, independent security assessment and approved data handling. Do not use real records before authorization.
 
-Follow-up: Vite remediation audit passed; full finance browser regression exposed a label/locator issue. Explicit program label and additional reporting/import validation changes are under CI. No release approval implied.
+See the [repository review](repository-review.md) for file-level inspection notes and outstanding work.

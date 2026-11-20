@@ -113,3 +113,11 @@ Pages verification passed on `6ead0dd` in [run 44787974681](https://github.com/J
 ## 2026-11-20 — Staff funding and reporting controls
 
 Added an audited edit for funding-source expiry, including validation against existing spending and active transfers. Custom report dates now stay in sync with the semester selector and can be cleared in one action. Editable academic-year and semester settings still use the existing audited API. Added PostgreSQL and staff browser coverage with fictional records. Local frontend unit tests, both frontend builds and the Pages preview browser check passed. [Staff-branch CI](https://github.com/JayJPatel223/ASUFC/actions/runs/44787862347) passed 50 backend, six frontend and two staff browser tests, plus the infrastructure and dependency checks. The staff change is in [draft pull request 1](https://github.com/JayJPatel223/ASUFC/pull/1). Source-specific settings still require an authorized staff environment.
+
+## 2026-11-20 — Staff application review and spending rules
+
+Completed the first file-by-file repository review. Added lists of approved programs, suppliers and purchase types with a staff editor and a shared server-side eligibility check. Eligibility applies to new budgets, increases, purchases, suggestions, imports and corrections. Audited edits reject changes that conflict with existing allocations, spending or active transfers. Carry-forward copies the rules, and the additive schema keeps older restrictions effective.
+
+Fixed narrow layout overflow in the funding interface. Locked frontend dependencies and switched builds to `npm ci`. Updated the separate backend build context to exclude local data and upgraded the Python installer after the local audit flagged pip 25.0.1. The audit passed after the upgrade. Updated the README, architecture and security notes, and added the repository checklist.
+
+Local verification passed 52 backend tests, six frontend unit tests, two staff browser tests and one Pages browser test. The funding screen passed keyboard focus and overflow checks at desktop, tablet and phone widths. Both frontend builds, npm and Python audits, and an upgrade of a disposable legacy PostgreSQL database passed. CI verifies the locked install, HTTPS gateway, backup monitoring and plain and encrypted restore. The next roadmap milestone is the broader staff interface review.
