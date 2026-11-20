@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: offline-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   desktop-runtime:
     name: Runtime on ${{ matrix.name }}
@@ -55,6 +59,8 @@ jobs:
           if [ "${RUNNER_OS}" = Windows ]; then executable+=.exe; fi
           python scripts/verify_desktop_runtime.py -- "$executable" --frontend desktop/runtime/frontend --postgres-bin desktop/runtime/postgres/bin
       - run: npm ci
+        working-directory: desktop
+      - run: npm audit
         working-directory: desktop
       - name: Verify first launch, sign-in and reopening the desktop window
         shell: bash

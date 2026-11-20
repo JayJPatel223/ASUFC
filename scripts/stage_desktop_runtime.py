@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -60,10 +61,12 @@ def main():
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
             "--name", "asufc-backend", "--paths", "backend",
             "--workpath", temporary, "--specpath", temporary, "--distpath", str(output),
-            "--add-data", "backend/app/schema.sql:app", "--collect-all", "psycopg_binary",
+            "--add-data", f"{ROOT / 'backend/app/schema.sql'}:app",
+            "--hidden-import", "psycopg_binary.pq", "--hidden-import", "psycopg_binary._psycopg",
+            "--collect-binaries", "psycopg_binary",
             "--hidden-import", "uvicorn.loops.asyncio", "--hidden-import", "uvicorn.protocols.http.h11_impl",
             "--hidden-import", "uvicorn.lifespan.on", "scripts/desktop_backend.py",
-        ], cwd=ROOT, check=True)
+        ], cwd=ROOT, env={**os.environ, "PYINSTALLER_CONFIG_DIR": temporary}, check=True)
 
 
 if __name__ == "__main__":
