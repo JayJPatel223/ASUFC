@@ -56,7 +56,7 @@ try {
     const page = await app.firstWindow();
     await staffLogin(page);
     await expect(page.getByRole('region', { name: 'Cash', exact: true })).toContainText('100.00');
-    await expect(page.getByText('Fictional window grant', { exact: true })).toBeVisible();
+    await expect(page.getByRole('row', { name: /Fictional window grant/ })).toBeVisible();
   } finally {
     await app.close();
   }

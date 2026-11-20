@@ -84,4 +84,3 @@ jobs:
             desktop/release/*.exe
             desktop/release/*.dmg
             desktop/release/*.AppImage
-            desktop/release/*.deb

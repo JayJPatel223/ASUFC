@@ -25,6 +25,6 @@
     "extraResources": [{ "from": "runtime", "to": "runtime" }],
     "win": { "target": "nsis" },
     "mac": { "target": "dmg", "category": "public.app-category.finance" },
-    "linux": { "target": ["AppImage", "deb"], "category": "Office" }
+    "linux": { "target": "AppImage", "category": "Office" }
   }
 }
