@@ -133,6 +133,20 @@ CREATE TABLE IF NOT EXISTS funding_purchase_type (
  purchase_type text NOT NULL CHECK(length(trim(purchase_type))>0)
 );
 
+CREATE TABLE IF NOT EXISTS funding_eligibility (
+ funding_id bigint PRIMARY KEY REFERENCES funding(id),
+ eligible_programs text[] NOT NULL,
+ eligible_suppliers text[] NOT NULL,
+ eligible_purchase_types text[] NOT NULL
+);
+CREATE OR REPLACE VIEW effective_funding_eligibility AS
+ SELECT f.id AS funding_id,
+ COALESCE(e.eligible_programs, array_remove(ARRAY[NULLIF(f.eligible_program,'')], NULL)) AS eligible_programs,
+ COALESCE(e.eligible_suppliers, array_remove(ARRAY[NULLIF(f.eligible_supplier,'')], NULL)) AS eligible_suppliers,
+ COALESCE(e.eligible_purchase_types, array_remove(ARRAY[t.purchase_type], NULL)) AS eligible_purchase_types
+ FROM funding f LEFT JOIN funding_eligibility e ON e.funding_id=f.id
+ LEFT JOIN funding_purchase_type t ON t.funding_id=f.id;
+
 CREATE TABLE IF NOT EXISTS staff_session (
  token_hash text PRIMARY KEY,
  username text NOT NULL,

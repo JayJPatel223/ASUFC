@@ -9,8 +9,31 @@ test('create funding and budget, spend, report, reconcile and void',async({page,
  await grant.getByLabel('Funding source',{exact:true}).fill('Browser fictional grant');
  await grant.getByLabel('Total award (CAD)').fill('1000');
  await grant.getByLabel('Confirmed received (CAD)').fill('1000');
+ await grant.getByRole('checkbox', {name: 'General Restocks'}).check();
+ await grant.getByRole('checkbox', {name: 'Foodsharing Breakfast Program'}).check();
+ await grant.getByLabel('Eligible suppliers (one per line)').fill('Browser fictional shop\nFictional distributor');
+ await grant.getByLabel('Eligible purchase types (one per line)').fill('Groceries\nSupplies');
  await grant.getByRole('button',{name:'Save funding'}).click();
  await expect(page.getByText('Record saved successfully.')).toBeVisible();
+ const spendingRules = page.locator('section').filter({has: page.getByRole('heading', {name: 'Edit spending rules'})});
+ await spendingRules.getByLabel('Funding source').selectOption({label: 'Browser fictional grant'});
+ await expect(spendingRules.getByRole('checkbox', {name: 'General Restocks'})).toBeChecked();
+ await expect(spendingRules.getByRole('checkbox', {name: 'Foodsharing Breakfast Program'})).toBeChecked();
+ const suppliers = spendingRules.getByLabel('Eligible suppliers (one per line)');
+ const purchaseTypes = spendingRules.getByLabel('Eligible purchase types (one per line)');
+ await expect(suppliers).toHaveValue('Browser fictional shop\nFictional distributor');
+ for (const width of [1440, 820, 390]) {
+  await page.setViewportSize({width, height: 900});
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await suppliers.focus();
+  await page.keyboard.press('Tab');
+  await expect(purchaseTypes).toBeFocused();
+ }
+ await page.setViewportSize({width: 1280, height: 720});
+ await spendingRules.getByLabel('Eligible purchase types (one per line)').fill('Groceries\nHousehold supplies');
+ await spendingRules.getByLabel('Reason').fill('Fictional terms updated');
+ await spendingRules.getByRole('button', {name: 'Save spending rules'}).click();
+ await expect(page.getByRole('row').filter({hasText: 'Browser fictional grant'})).toContainText('Household supplies');
  const expiryForm = page.locator('section').filter({has: page.getByRole('heading', {name: 'Update funding expiry'})});
  const source = expiryForm.getByLabel('Funding source');
  await source.selectOption({label: 'Browser fictional grant · No expiry recorded'});

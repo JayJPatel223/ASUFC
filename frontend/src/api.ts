@@ -1,5 +1,10 @@
 export type Program={code:string;name:string};
-export type Funding={eligible_purchase_type:string|null;carry_eligible:boolean;carried_in_cents:number;carried_out_cents:number;capacity_cents:number;organization:string;source_type:string;recurring:boolean;expected_date:string|null;notes:string;id:number;name:string;academic_year:string;kind:'cash'|'credit';expected_cents:number;received_cents:number;remaining_cents:number;unallocated_cents:number;expiry:string|null;eligible_program:string|null;eligible_supplier:string|null};
+export type FundingEligibility = {
+  eligible_programs: string[];
+  eligible_suppliers: string[];
+  eligible_purchase_types: string[];
+};
+export type Funding=Partial<FundingEligibility>&{eligible_purchase_type:string|null;carry_eligible:boolean;carried_in_cents:number;carried_out_cents:number;capacity_cents:number;organization:string;source_type:string;recurring:boolean;expected_date:string|null;notes:string;id:number;name:string;academic_year:string;kind:'cash'|'credit';expected_cents:number;received_cents:number;remaining_cents:number;unallocated_cents:number;expiry:string|null;eligible_program:string|null;eligible_supplier:string|null};
 export type Budget={id:number;funding_id:number;funding_name:string;program_code:string;academic_year:string;kind:string;cents:number;remaining:number;expiry:string|null};
 export type Transaction={original_id:number|null;replacement_id:number|null;status:'confirmed'|'voided';void_reason:string|null;voided_at:string|null;id:number;purchase_date:string;supplier:string;purchase_type:string;description:string;cents:number;allocations:{budget_id:number;program:string;funding:string;kind:string;academic_year:string;cents:number}[]};
 export type Dashboard={funding:{kind:string;received:number;expected:number;spent:number;carried_in:number;carried_out:number;capacity:number}[];programs:{program_code:string;allocated:number;spent:number}[]};

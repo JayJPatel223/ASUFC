@@ -1,6 +1,6 @@
 import React,{useState,useEffect,useMemo} from 'react';
 import {createRoot} from 'react-dom/client';
-import {makeApi,cents,money,Program,Funding,Budget,Transaction,Dashboard,Api,AuditEvent,downloadReport,FundingReceipt,AcademicPeriod,FundingTransfer} from './api';
+import {makeApi,cents,money,Program,Funding,FundingEligibility,Budget,Transaction,Dashboard,Api,AuditEvent,downloadReport,FundingReceipt,AcademicPeriod,FundingTransfer} from './api';
 import './style.css';
 import {makeDemoApi} from './demo';
 const DEMO=import.meta.env.MODE==='pages';
@@ -17,8 +17,71 @@ function Overview({data,year}:{data:Data;year:string}){const cash=data.dashboard
 <div className="metrics">{[['Cash received',cash?.received||0],['Cash spent',cash?.spent||0],['Cash carried in',cash?.carried_in||0],['Cash carried out',cash?.carried_out||0],['Credit carried in',credit?.carried_in||0],['Credit carried out',credit?.carried_out||0],['Cash remaining',(cash?.capacity||0)-(cash?.spent||0)],['Credit remaining',(credit?.capacity||0)-(credit?.spent||0)],['Expected cash',cash?.expected||0],['Expected credit',credit?.expected||0],['Unallocated cash',rows.filter(f=>f.kind==='cash').reduce((s,f)=>s+Number(f.unallocated_cents),0)]].map(([label,n])=><article className="metric" key={label}><span>{label}</span><strong>{money(Number(n))}</strong></article>)}</div>
 <Panel title="Program utilization">{data.dashboard.programs.length===0?<p>No budgets for this year.</p>:data.dashboard.programs.map(p=><div className="barrow" key={p.program_code}><div><b>{data.programs.find(x=>x.code===p.program_code)?.name||p.program_code}</b><span>{money(p.spent)} / {money(p.allocated)}</span></div><progress max={Number(p.allocated)||1} value={Number(p.spent)}/><small>{money(p.allocated-p.spent)} remaining</small></div>)}</Panel>
 <Panel title="Funding utilization and alerts">{alerts.map(f=><p key={f.id} className="warning">{f.name}: low balance ({money(f.remaining_cents)})</p>)}{rows.filter(f=>f.expiry).map(f=><p key={f.id}>{f.name}: expiry {f.expiry}</p>)}<p className="muted">Unallocated confirmed balances below may support additional eligible budgets. Check restrictions and expiry before allocating.</p><FundingTable rows={rows}/></Panel></>}
-function FundingTable({rows}:{rows:Funding[]}){return <div className="tablewrap"><table><thead><tr><th>Source</th><th>Type</th><th>Received</th><th>Carried in</th><th>Carried out</th><th>Expected outstanding</th><th>Remaining</th><th>Unallocated</th></tr></thead><tbody>{rows.map(f=><tr key={f.id}><td>{f.name}<small>{f.eligible_program||'All programs'}{f.eligible_supplier?' · '+f.eligible_supplier:''}{f.eligible_purchase_type?' · '+f.eligible_purchase_type:''}</small></td><td>{f.kind}</td><td>{money(f.received_cents)}</td><td>{money(f.carried_in_cents)}</td><td>{money(f.carried_out_cents)}</td><td>{money(f.expected_cents-f.received_cents)}</td><td>{money(f.remaining_cents)}</td><td>{money(f.unallocated_cents)}</td></tr>)}</tbody></table>{!rows.length&&<p>No funding recorded.</p>}</div>}
-function FundingPage({data,year,save,busy,api}:{data:Data;year:string;save:Save;busy:boolean;api:Api}){const rows=data.funding.filter(f=>f.academic_year===year);return <><div className="twocol"><Panel title="Add funding"><Form busy={busy} button="Save funding" onSubmit={async f=>save('/funding',{name:field(f,'name'),academic_year:year,kind:field(f,'kind'),expected_cents:cents(field(f,'award')),received_cents:cents(field(f,'received')),expiry:field(f,'expiry')||null,eligible_program:field(f,'program')||null,eligible_supplier:field(f,'supplier')||null,organization:field(f,'organization'),source_type:field(f,'source_type'),recurring:field(f,'recurring')==='yes',expected_date:field(f,'expected_date')||null,notes:field(f,'notes'),received_on:field(f,'received_on')||null})}><Input name="name" label="Funding source"/><Input name="organization" label="Funding organization" required={false}/><Input name="source_type" label="Funding classification" required={false}/><label>Recurring funding<select name="recurring"><option value="no">No / not confirmed</option><option value="yes">Yes</option></select></label><Input name="expected_date" label="Expected receipt date" type="date" required={false}/><Input name="received_on" label="Actual receipt date (if known)" type="date" required={false}/><Input name="notes" label="Grant notes" required={false}/><label>Funding type<select name="kind"><option value="cash">Cash</option><option value="credit">Purchasing credit</option></select></label><Input name="award" label="Total award (CAD)" type="number"/><Input name="received" label="Confirmed received (CAD)" type="number" defaultValue="0"/><label>Program restriction<ProgramSelect programs={data.programs} optional/></label><Input name="supplier" label="Supplier restriction" required={false}/><Input name="expiry" label="Expiry date" type="date" required={false}/></Form></Panel><Panel title="Confirm funding received"><Form busy={busy} button="Update confirmed amount" onSubmit={async f=>save('/funding/'+field(f,'id')+'/received',{received_cents:cents(field(f,'total')),received_on:field(f,'received_on')||null},'PATCH')}><label>Funding source<select name="id" required><option value="">Select source</option>{rows.map(f=><option key={f.id} value={f.id}>{f.name} · received {money(f.received_cents)}</option>)}</select></label><Input name="total" label="New cumulative received amount (CAD)" type="number"/><Input name="received_on" label="Receipt date (if known)" type="date" required={false}/></Form></Panel></div><Panel title="Funding records"><FundingTable rows={rows}/></Panel><Panel title="Purchase type restrictions"><Form busy={busy} button="Save restriction" onSubmit={async f=>save("/funding/"+field(f,"id")+"/purchase-type",{purchase_type:field(f,"type")||null,reason:field(f,"reason")},"PATCH")}><label>Funding source<select name="id" required><option value="">Select funding</option>{rows.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></label><Input name="type" label="Allowed purchase type (blank removes restriction)" required={false}/><Input name="reason" label="Reason"/></Form></Panel>{!DEMO&&<FundingExpiryForm rows={rows} save={save} busy={busy}/>}<ReceiptHistory api={api} rows={rows}/><CarryForward data={data} year={year} save={save} busy={busy}/></>}
+function FundingTable({rows}:{rows:Funding[]}){return <div className="tablewrap"><table><thead><tr><th>Source</th><th>Type</th><th>Received</th><th>Carried in</th><th>Carried out</th><th>Expected outstanding</th><th>Remaining</th><th>Unallocated</th></tr></thead><tbody>{rows.map(f=><tr key={f.id}><td>{f.name}<small>{fundingRuleSummary(f)}</small>{!DEMO&&f.notes&&<small>{f.notes}</small>}</td><td>{f.kind}</td><td>{money(f.received_cents)}</td><td>{money(f.carried_in_cents)}</td><td>{money(f.carried_out_cents)}</td><td>{money(f.expected_cents-f.received_cents)}</td><td>{money(f.remaining_cents)}</td><td>{money(f.unallocated_cents)}</td></tr>)}</tbody></table>{!rows.length&&<p>No funding recorded.</p>}</div>}
+function FundingPage({data,year,save,busy,api}:{data:Data;year:string;save:Save;busy:boolean;api:Api}){const rows=data.funding.filter(f=>f.academic_year===year);return <><div className="twocol"><Panel title="Add funding"><Form busy={busy} button="Save funding" onSubmit={async f=>save('/funding',{name:field(f,'name'),academic_year:year,kind:field(f,'kind'),expected_cents:cents(field(f,'award')),received_cents:cents(field(f,'received')),expiry:field(f,'expiry')||null,...(DEMO?{eligible_program:field(f,'program')||null,eligible_supplier:field(f,'supplier')||null}:readFundingRuleFields(f)),organization:field(f,'organization'),source_type:field(f,'source_type'),recurring:field(f,'recurring')==='yes',expected_date:field(f,'expected_date')||null,notes:field(f,'notes'),received_on:field(f,'received_on')||null})}><Input name="name" label="Funding source"/><Input name="organization" label="Funding organization" required={false}/><Input name="source_type" label="Funding classification" required={false}/><label>Recurring funding<select name="recurring"><option value="no">No / not confirmed</option><option value="yes">Yes</option></select></label><Input name="expected_date" label="Expected receipt date" type="date" required={false}/><Input name="received_on" label="Actual receipt date (if known)" type="date" required={false}/><Input name="notes" label="Grant notes" required={false}/><label>Funding type<select name="kind"><option value="cash">Cash</option><option value="credit">Purchasing credit</option></select></label><Input name="award" label="Total award (CAD)" type="number"/><Input name="received" label="Confirmed received (CAD)" type="number" defaultValue="0"/>{DEMO?<><label>Program restriction<ProgramSelect programs={data.programs} optional/></label><Input name="supplier" label="Supplier restriction" required={false}/></>:<FundingRuleFields programs={data.programs}/>}<Input name="expiry" label="Expiry date" type="date" required={false}/></Form></Panel><Panel title="Confirm funding received"><Form busy={busy} button="Update confirmed amount" onSubmit={async f=>save('/funding/'+field(f,'id')+'/received',{received_cents:cents(field(f,'total')),received_on:field(f,'received_on')||null},'PATCH')}><label>Funding source<select name="id" required><option value="">Select source</option>{rows.map(f=><option key={f.id} value={f.id}>{f.name} · received {money(f.received_cents)}</option>)}</select></label><Input name="total" label="New cumulative received amount (CAD)" type="number"/><Input name="received_on" label="Receipt date (if known)" type="date" required={false}/></Form></Panel></div><Panel title="Funding records"><FundingTable rows={rows}/></Panel>{!DEMO&&<><FundingRulesForm programs={data.programs} rows={rows} save={save} busy={busy}/><FundingExpiryForm rows={rows} save={save} busy={busy}/></>}<ReceiptHistory api={api} rows={rows}/><CarryForward data={data} year={year} save={save} busy={busy}/></>}
+function fundingRules(funding?: Funding): FundingEligibility {
+  return {
+    eligible_programs: funding?.eligible_programs ?? (funding?.eligible_program ? [funding.eligible_program] : []),
+    eligible_suppliers: funding?.eligible_suppliers ?? (funding?.eligible_supplier ? [funding.eligible_supplier] : []),
+    eligible_purchase_types: funding?.eligible_purchase_types ?? (funding?.eligible_purchase_type ? [funding.eligible_purchase_type] : []),
+  };
+}
+function fundingRuleSummary(funding: Funding) {
+  const rules = fundingRules(funding);
+  return [
+    rules.eligible_programs.join(', ') || 'All programs',
+    rules.eligible_suppliers.join(', '),
+    rules.eligible_purchase_types.join(', '),
+  ].filter(Boolean).join(' · ');
+}
+function readFundingRuleFields(form: FormData): FundingEligibility {
+  return {
+    eligible_programs: form.getAll('eligible_programs').map(String),
+    eligible_suppliers: field(form, 'eligible_suppliers').split('\n').map(label => label.trim()).filter(Boolean),
+    eligible_purchase_types: field(form, 'eligible_purchase_types').split('\n').map(label => label.trim()).filter(Boolean),
+  };
+}
+function FundingRuleFields({programs, initial = fundingRules()}: {programs: Program[]; initial?: FundingEligibility}) {
+  return <>
+    <fieldset className="funding-programs">
+      <legend>Eligible programs</legend>
+      <p className="muted">Leave all unchecked to allow any program.</p>
+      {programs.map(program => <label key={program.code}>
+        <input type="checkbox" name="eligible_programs" value={program.code}
+          defaultChecked={initial.eligible_programs.includes(program.code)}/>
+        {program.name}
+      </label>)}
+    </fieldset>
+    <label>Eligible suppliers (one per line)
+      <textarea name="eligible_suppliers" rows={3} defaultValue={initial.eligible_suppliers.join('\n')}/>
+    </label>
+    <label>Eligible purchase types (one per line)
+      <textarea name="eligible_purchase_types" rows={3} defaultValue={initial.eligible_purchase_types.join('\n')}/>
+    </label>
+    <p className="muted">Leave a list blank to allow any value. Use the supplier and purchase type names staff enter on purchases.</p>
+  </>;
+}
+function FundingRulesForm({programs, rows, save, busy}: {programs: Program[]; rows: Funding[]; save: Save; busy: boolean}) {
+  const [sourceId, setSourceId] = useState('');
+  const source = rows.find(row => String(row.id) === sourceId);
+  const initial = fundingRules(source);
+  return <Panel title="Edit spending rules">
+    <label>Funding source
+      <select value={source ? sourceId : ''} onChange={event => setSourceId(event.target.value)}>
+        <option value="">Choose source</option>
+        {rows.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}
+      </select>
+    </label>
+    {source && <Form key={source.id} busy={busy} button="Save spending rules" onSubmit={async form => save(
+      '/funding/' + source.id + '/eligibility',
+      {...readFundingRuleFields(form), expected: initial, reason: field(form, 'reason')},
+      'PATCH',
+    )}>
+      <FundingRuleFields programs={programs} initial={initial}/>
+      <Input name="reason" label="Reason"/>
+    </Form>}
+  </Panel>;
+}
 function FundingExpiryForm({rows, save, busy}: {rows: Funding[]; save: Save; busy: boolean}) {
   return <Panel title="Update funding expiry">
     <Form busy={busy} button="Save expiry" onSubmit={async form => save(

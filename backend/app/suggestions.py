@@ -1,5 +1,6 @@
 from datetime import date
 
+from .rules import spending_restriction
 
 def suggest_allocations(rows, total, program, year, kind, supplier, purchase_date, preferred_funding=None, purchase_type=''):
     """Read-only proposal for one program and one payment kind; never saves records."""
@@ -11,11 +12,7 @@ def suggest_allocations(rows, total, program, year, kind, supplier, purchase_dat
             continue
         if row['expiry'] and row['expiry'] < max(purchase_date, date.today()):
             continue
-        if row['eligible_program'] and row['eligible_program'] != program:
-            continue
-        if row.get('eligible_purchase_type') and row['eligible_purchase_type'].strip().casefold()!=purchase_type.strip().casefold():
-            continue
-        if row['eligible_supplier'] and row['eligible_supplier'].casefold() != supplier.casefold():
+        if spending_restriction(row, program, supplier, purchase_type):
             continue
         if min(row['remaining'], row['fund_remaining']) > 0:
             eligible.append(row)

@@ -3,7 +3,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from hashlib import sha256
 from .credentials import hash_password,verify_password,validate_password
 from pydantic import BaseModel, Field
-from .rules import validate_purchase
+from .rules import restriction_allows, spending_restriction, validate_purchase
 from .suggestions import suggest_allocations
 
 def db():
@@ -101,6 +101,10 @@ async def no_cache(request,call_next):
     response.headers["X-Content-Type-Options"]="nosniff"
     return response
 
+ProgramCode = Annotated[str, Field(min_length=1, max_length=40)]
+SupplierName = Annotated[str, Field(min_length=1, max_length=200)]
+PurchaseType = Annotated[str, Field(min_length=1, max_length=100)]
+
 class Funding(BaseModel):
     name: str = Field(min_length=1,max_length=200)
     academic_year: str = Field(pattern=r"^\d{4}-\d{4}$")
@@ -110,6 +114,9 @@ class Funding(BaseModel):
     expiry: date | None = None
     eligible_program: str | None = None
     eligible_supplier: str | None = None
+    eligible_programs: list[ProgramCode] | None = Field(default=None, max_length=100)
+    eligible_suppliers: list[SupplierName] | None = Field(default=None, max_length=100)
+    eligible_purchase_types: list[PurchaseType] | None = Field(default=None, max_length=100)
     organization: str = Field(default="",max_length=200)
     source_type: str = Field(default="",max_length=100)
     recurring: bool = False
@@ -152,6 +159,50 @@ def add_receipt(c,funding_id,cents,received_on):
 def bad(message):
     raise HTTPException(422, message)
 
+ELIGIBILITY_FIELDS = ("eligible_programs", "eligible_suppliers", "eligible_purchase_types")
+
+def normalize_eligibility(programs: list[str], suppliers: list[str], purchase_types: list[str]):
+    rules = {}
+    for field, values in zip(ELIGIBILITY_FIELDS, (programs, suppliers, purchase_types), strict=True):
+        unique = {}
+        for value in values:
+            label = value.strip()
+            if not label:
+                bad("Spending rules cannot contain blank values")
+            if "\x00" in label or len(label.splitlines()) != 1:
+                bad("Enter one value per spending rule")
+            key = label if field == "eligible_programs" else label.casefold()
+            unique.setdefault(key, label)
+        rules[field] = list(unique.values())
+    return rules
+
+def verify_eligible_programs(c, codes: list[str]):
+    if codes and c.execute(
+        "SELECT count(*) AS count FROM program WHERE code=ANY(%s)", (codes,)
+    ).fetchone()["count"] != len(codes):
+        bad("Unknown program in spending rules")
+
+def funding_eligibility(c, funding_id: int):
+    return c.execute(
+        """SELECT eligible_programs, eligible_suppliers, eligible_purchase_types
+           FROM effective_funding_eligibility WHERE funding_id=%s""", (funding_id,)
+    ).fetchone()
+
+def store_funding_eligibility(c, funding_id: int, rules: dict):
+    c.execute("""INSERT INTO funding_eligibility
+        (funding_id, eligible_programs, eligible_suppliers, eligible_purchase_types)
+        VALUES (%(funding_id)s, %(eligible_programs)s, %(eligible_suppliers)s, %(eligible_purchase_types)s)
+        ON CONFLICT (funding_id) DO UPDATE SET eligible_programs=excluded.eligible_programs,
+        eligible_suppliers=excluded.eligible_suppliers, eligible_purchase_types=excluded.eligible_purchase_types
+        """, {"funding_id": funding_id, **rules})
+
+def funding_rule_fields(row: dict):
+    result = row.copy()
+    for field in ELIGIBILITY_FIELDS:
+        values = result[field]
+        result[field.removesuffix("s")] = values[0] if len(values) == 1 else None
+    return result
+
 @router.get("/programs")
 def programs():
     with db() as c:
@@ -160,13 +211,27 @@ def programs():
 @router.post("/funding", status_code=201)
 def add_funding(f: Funding):
     if f.received_cents > f.expected_cents: bad("Received exceeds award")
+    has_new_rules = any(getattr(f, field) is not None for field in ELIGIBILITY_FIELDS)
+    if ((f.eligible_program and f.eligible_programs is not None)
+        or (f.eligible_supplier and f.eligible_suppliers is not None)):
+        bad("Use one form of each spending rule")
     with db() as c:
         validate_year_label(f.academic_year)
         if f.eligible_program and not c.execute("SELECT 1 FROM program WHERE code=%s",(f.eligible_program,)).fetchone(): bad("Unknown program")
+        if has_new_rules:
+            rules = normalize_eligibility(
+                f.eligible_programs if f.eligible_programs is not None else ([f.eligible_program] if f.eligible_program else []),
+                f.eligible_suppliers if f.eligible_suppliers is not None else ([f.eligible_supplier] if f.eligible_supplier else []),
+                f.eligible_purchase_types or [],
+            )
+            verify_eligible_programs(c, rules["eligible_programs"])
         created=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,expected_date,notes,carry_eligible)
          VALUES (%(name)s,%(academic_year)s,%(kind)s,%(expected_cents)s,%(received_cents)s,%(expiry)s,%(eligible_program)s,%(eligible_supplier)s,%(organization)s,%(source_type)s,%(recurring)s,%(expected_date)s,%(notes)s,%(carry_eligible)s) RETURNING *""",f.model_dump()).fetchone()
+        if has_new_rules:
+            store_funding_eligibility(c, created["id"], rules)
         if f.received_cents:
             add_receipt(c,created["id"],f.received_cents,f.received_on)
+        created = funding_rule_fields(created | funding_eligibility(c, created["id"]))
         audit(c,"created","funding",created["id"],created)
         return created
 
@@ -180,13 +245,16 @@ def confirm_funding(funding_id: int, r: Receipt):
         if r.received_cents>f["received_cents"]:
             add_receipt(c,funding_id,r.received_cents-f["received_cents"],r.received_on)
         audit(c,"receipt_confirmed","funding",funding_id,{"before":f["received_cents"],"after":updated["received_cents"]})
-        return updated
+        return funding_rule_fields(updated | funding_eligibility(c, funding_id))
 
 @router.get("/funding")
 def funding():
     with db() as c:
-        return c.execute("""SELECT f.*, (SELECT purchase_type FROM funding_purchase_type WHERE funding_id=f.id) AS eligible_purchase_type, capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
-        capacity_cents-COALESCE((SELECT sum(b.cents) FROM budget b WHERE b.funding_id=f.id),0) AS unallocated_cents FROM funding_capacity f ORDER BY id""").fetchall()
+        rows = c.execute("""SELECT f.*, e.eligible_programs, e.eligible_suppliers, e.eligible_purchase_types,
+        capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0) AS remaining_cents,
+        capacity_cents-COALESCE((SELECT sum(b.cents) FROM budget b WHERE b.funding_id=f.id),0) AS unallocated_cents
+        FROM funding_capacity f JOIN effective_funding_eligibility e ON e.funding_id=f.id ORDER BY f.id""").fetchall()
+        return [funding_rule_fields(row) for row in rows]
 
 @router.post("/budgets",status_code=201)
 def add_budget(b: Budget):
@@ -194,7 +262,8 @@ def add_budget(b: Budget):
         f=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(b.funding_id,)).fetchone()
         if not f: bad("Unknown funding")
         if not c.execute("SELECT 1 FROM program WHERE code=%s",(b.program_code,)).fetchone(): bad("Unknown program")
-        if f["eligible_program"] and f["eligible_program"] != b.program_code: bad("Program not eligible")
+        if not restriction_allows(funding_eligibility(c, b.funding_id), "eligible_program", b.program_code):
+            bad("Program not eligible")
         if f["expiry"] and f["expiry"] < date.today(): bad("Funding expired")
         used=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s",(b.funding_id,)).fetchone()["n"]
         if used+b.cents>capacity(c,f["id"]): bad("Insufficient unallocated confirmed funding")
@@ -203,15 +272,17 @@ def add_budget(b: Budget):
         audit(c,"created","budget",created["id"],created)
         return created
 
-BUDGET_QUERY="""SELECT b.*, f.name AS funding_name,f.kind,f.academic_year,f.expiry,f.eligible_program,f.eligible_supplier,(SELECT purchase_type FROM funding_purchase_type WHERE funding_id=f.id) AS eligible_purchase_type,
+BUDGET_QUERY="""SELECT b.*, f.name AS funding_name,f.kind,f.academic_year,f.expiry,
+ e.eligible_programs,e.eligible_suppliers,e.eligible_purchase_types,
  b.cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0) AS remaining,
  f.capacity_cents-COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget bb ON bb.id=a.budget_id WHERE bb.funding_id=f.id),0) AS fund_remaining
- FROM budget b JOIN funding_capacity f ON f.id=b.funding_id"""
+ FROM budget b JOIN funding_capacity f ON f.id=b.funding_id
+ JOIN effective_funding_eligibility e ON e.funding_id=f.id"""
 
 @router.get("/budgets")
 def budgets():
     with db() as c:
-        return c.execute(BUDGET_QUERY+" ORDER BY b.id").fetchall()
+        return [funding_rule_fields(row) for row in c.execute(BUDGET_QUERY+" ORDER BY b.id")]
 
 @router.post("/transactions",status_code=201)
 def record(p: Purchase):
@@ -297,7 +368,7 @@ def change_funding_expiry(funding_id: int, change: FundingExpiryChange):
         if not funding:
             raise HTTPException(404, "Unknown funding")
         if funding["expiry"] == change.expiry:
-            return funding
+            return funding_rule_fields(funding | funding_eligibility(c, funding_id))
         if c.execute(
             "SELECT 1 FROM active_funding_transfer WHERE source_id=%s OR destination_id=%s",
             (funding_id, funding_id),
@@ -318,7 +389,7 @@ def change_funding_expiry(funding_id: int, change: FundingExpiryChange):
         audit(c, "expiry_changed", "funding", funding_id, {
             "before": funding["expiry"], "after": change.expiry, "reason": reason,
         })
-        return updated
+        return funding_rule_fields(updated | funding_eligibility(c, funding_id))
 
 class BudgetChange(ChangeReason):
     cents: int = Field(ge=0,le=10**12)
@@ -348,7 +419,10 @@ def adjust_budget(budget_id: int, change: BudgetChange):
         other=c.execute("SELECT COALESCE(sum(cents),0) AS n FROM budget WHERE funding_id=%s AND id<>%s",(f["id"],budget_id)).fetchone()["n"]
         if change.cents < spent: bad("Budget cannot be less than confirmed spending")
         if change.cents+other > capacity(c,f["id"]): bad("Insufficient confirmed funding")
-        if change.cents>b["cents"] and f["expiry"] and f["expiry"]<date.today(): bad("Funding expired")
+        if change.cents > b["cents"]:
+            if f["expiry"] and f["expiry"] < date.today(): bad("Funding expired")
+            if not restriction_allows(funding_eligibility(c, f["id"]), "eligible_program", b["program_code"]):
+                bad("Program not eligible")
         result=c.execute("UPDATE budget SET cents=%s WHERE id=%s RETURNING *",(change.cents,budget_id)).fetchone()
         audit(c,"adjusted","budget",budget_id,{"before":b["cents"],"after":change.cents,"reason":change.reason.strip()})
         return result
@@ -478,7 +552,7 @@ def carry_permission(funding_id: int,p: CarryPermission):
         if not old: raise HTTPException(404,"Unknown funding")
         row=c.execute("UPDATE funding SET carry_eligible=%s WHERE id=%s RETURNING *",(p.eligible,funding_id)).fetchone()
         audit(c,"carry_permission_changed","funding",funding_id,{"before":old["carry_eligible"],"after":p.eligible,"reason":p.reason.strip()})
-        return row
+        return funding_rule_fields(row | funding_eligibility(c, funding_id))
 
 @router.post("/funding/{funding_id}/carry-forward",status_code=201)
 def carry_forward(funding_id: int,p: CarryTransfer):
@@ -498,7 +572,7 @@ def carry_forward(funding_id: int,p: CarryTransfer):
         # A transfer creates a new funding bucket with no new award or receipt.
         dest=c.execute("""INSERT INTO funding(name,academic_year,kind,expected_cents,received_cents,expiry,eligible_program,eligible_supplier,organization,source_type,recurring,notes,carry_eligible)
         VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,false,%s,false) RETURNING *""",(source["name"],p.destination_year,source["kind"],source["expiry"],source["eligible_program"],source["eligible_supplier"],source["organization"],source["source_type"],source["notes"])).fetchone()
-        c.execute("INSERT INTO funding_purchase_type(funding_id,purchase_type) SELECT %s,purchase_type FROM funding_purchase_type WHERE funding_id=%s",(dest["id"],funding_id))
+        store_funding_eligibility(c, dest["id"], funding_eligibility(c, funding_id))
         transfer=c.execute("INSERT INTO funding_transfer(source_id,destination_id,cents,reason) VALUES (%s,%s,%s,%s) RETURNING *",(funding_id,dest["id"],p.cents,p.reason.strip())).fetchone()
         audit(c,"carried_forward","funding",funding_id,transfer)
         return transfer
@@ -644,26 +718,70 @@ def edit_semester(year: str,semester_id: int,p: SemesterEdit):
         audit(c,"adjusted","semester",semester_id,{"before":old,"after":row,"reason":p.reason})
         return row
 
+class FundingEligibilityChange(ChangeReason):
+    eligible_programs: list[ProgramCode] = Field(max_length=100)
+    eligible_suppliers: list[SupplierName] = Field(max_length=100)
+    eligible_purchase_types: list[PurchaseType] = Field(max_length=100)
+    expected: dict[str, list[str]] = Field(max_length=3)
+
+def lock_funding_eligibility(c, funding_id: int):
+    if not c.execute("SELECT id FROM funding WHERE id=%s FOR UPDATE", (funding_id,)).fetchone():
+        raise HTTPException(404, "Unknown funding")
+    return funding_eligibility(c, funding_id)
+
+def change_funding_eligibility(c, funding_id: int, previous: dict, rules: dict, reason: str):
+    if rules == previous:
+        return
+    if c.execute(
+        "SELECT 1 FROM active_funding_transfer WHERE source_id=%s OR destination_id=%s",
+        (funding_id, funding_id),
+    ).fetchone():
+        bad("Reverse active transfers before changing restrictions")
+    programs = rules["eligible_programs"]
+    verify_eligible_programs(c, programs)
+    if programs and c.execute(
+        "SELECT 1 FROM budget WHERE funding_id=%s AND cents>0 AND NOT (program_code=ANY(%s))",
+        (funding_id, programs),
+    ).fetchone():
+        bad("Restriction conflicts with existing budget allocations")
+    if any(rules.values()):
+        purchases = c.execute("""SELECT DISTINCT b.program_code, p.supplier, p.purchase_type
+            FROM active_allocation a JOIN budget b ON b.id=a.budget_id
+            JOIN purchase p ON p.id=a.purchase_id WHERE b.funding_id=%s""", (funding_id,))
+        for purchase in purchases:
+            if spending_restriction(rules, purchase["program_code"], purchase["supplier"], purchase["purchase_type"]):
+                bad("Restriction conflicts with existing spending")
+    store_funding_eligibility(c, funding_id, rules)
+    audit(c, "restriction_changed", "funding", funding_id, {"before": previous, "after": rules, "reason": reason})
+
+@router.patch("/funding/{funding_id}/eligibility")
+def update_eligibility(funding_id: int, change: FundingEligibilityChange):
+    reason = change.reason.strip()
+    if not reason: bad("Reason required")
+    rules = normalize_eligibility(change.eligible_programs, change.eligible_suppliers, change.eligible_purchase_types)
+    with db() as c:
+        previous = lock_funding_eligibility(c, funding_id)
+        if previous != change.expected:
+            raise HTTPException(409, "Spending rules changed. Reload the funding record and review the latest rules.")
+        change_funding_eligibility(c, funding_id, previous, rules, reason)
+        return {"funding_id": funding_id, **rules}
+
 class PurchaseTypeRestriction(ChangeReason):
-    purchase_type: str | None = Field(default=None,max_length=100)
+    purchase_type: str | None = Field(default=None, max_length=100)
 
 @router.patch("/funding/{funding_id}/purchase-type")
-def purchase_type_restriction(funding_id: int,p: PurchaseTypeRestriction):
-    if not p.reason.strip(): bad("Reason required")
-    restriction=p.purchase_type.strip() if p.purchase_type else None
-    if p.purchase_type is not None and not restriction: bad("Restriction cannot be blank")
+def purchase_type_restriction(funding_id: int, change: PurchaseTypeRestriction):
+    reason = change.reason.strip()
+    if not reason: bad("Reason required")
+    restriction = change.purchase_type.strip() if change.purchase_type is not None else None
+    if restriction == "": bad("Restriction cannot be blank")
     with db() as c:
-        source=c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE",(funding_id,)).fetchone()
-        if not source: raise HTTPException(404,"Unknown funding")
-        if c.execute("SELECT 1 FROM active_funding_transfer WHERE source_id=%s OR destination_id=%s",(funding_id,funding_id)).fetchone(): bad("Reverse active transfers before changing restrictions")
-        if restriction and c.execute("SELECT 1 FROM active_allocation a JOIN budget b ON b.id=a.budget_id JOIN purchase p ON p.id=a.purchase_id WHERE b.funding_id=%s AND lower(trim(p.purchase_type))<>lower(%s)",(funding_id,restriction)).fetchone(): bad("Restriction conflicts with existing spending")
-        old=c.execute("SELECT * FROM funding_purchase_type WHERE funding_id=%s",(funding_id,)).fetchone()
-        if restriction:
-            c.execute("INSERT INTO funding_purchase_type VALUES (%s,%s) ON CONFLICT(funding_id) DO UPDATE SET purchase_type=excluded.purchase_type",(funding_id,restriction))
-        else:
-            c.execute("DELETE FROM funding_purchase_type WHERE funding_id=%s",(funding_id,))
-        audit(c,"restriction_changed","funding",funding_id,{"before":old,"after":restriction,"reason":p.reason})
-        return {"funding_id":funding_id,"purchase_type":restriction}
+        previous = lock_funding_eligibility(c, funding_id)
+        if len(previous["eligible_purchase_types"]) > 1:
+            bad("Edit multiple purchase types using the spending rules form")
+        rules = previous | {"eligible_purchase_types": [restriction] if restriction else []}
+        change_funding_eligibility(c, funding_id, previous, rules, reason)
+        return {"funding_id": funding_id, "purchase_type": restriction}
 
 class PasswordChange(BaseModel):
     current_password: str = Field(max_length=1024)

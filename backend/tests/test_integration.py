@@ -79,7 +79,7 @@ def test_filtered_spending_report(client):
     assert client.get("/reports/spending").json()["purchase_count"]==0
 
 def test_atomic_correction_and_receipt_history(client):
-    f=create(client,"/funding",dict(name="Test grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=50000,organization="Test organization",received_on="2026-01-01"))
+    f=create(client,"/funding",dict(name="Test grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=50000,organization="Test organization",received_on="2026-01-01",eligible_purchase_types=["Groceries", "Supplies"]))
     assert client.patch(f"/funding/{f['id']}/received",json={"received_cents":80000}).status_code==200
     receipts=client.get(f"/funding/{f['id']}/receipts").json()
     assert [x["cents"] for x in receipts]==[50000,30000]
@@ -89,6 +89,7 @@ def test_atomic_correction_and_receipt_history(client):
     url=f"/transactions/{tx['id']}/correct"
     invalid=payload|{"cents":60000,"allocations":[dict(budget_id=b["id"],cents=60000)]}
     assert client.post(url,json={"reason":"Incorrect","replacement":invalid}).status_code==422
+    assert client.post(url,json={"reason":"Incorrect category","replacement":payload | {"purchase_type":"Equipment"}}).json()["detail"] == "Purchase type not eligible"
     assert client.get("/transactions").json()[0]["status"]=="confirmed"
     valid=payload|{"cents":30000,"allocations":[dict(budget_id=b["id"],cents=30000)]}
     replacement=create(client,url,{"reason":"Correct amount","replacement":valid})
@@ -114,6 +115,10 @@ def test_carry_forward_conservation(client):
     for y,start,end in [("2026-2027","2026-09-01","2027-08-31"),("2027-2028","2027-09-01","2028-08-31")]:
         create(client,"/academic-years",dict(academic_year=y,starts_on=start,ends_on=end))
     f=create(client,"/funding",dict(name="Carry grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000,eligible_supplier="Test"))
+    rules = dict(eligible_programs=["ASUFCGR", "ASUFCFSBP"], eligible_suppliers=["Test"], eligible_purchase_types=["Food", "Supplies"])
+    initial = dict(eligible_programs=[], eligible_suppliers=["Test"], eligible_purchase_types=[])
+    rules_url = f"/funding/{f['id']}/eligibility"
+    assert client.patch(rules_url, json=rules | {"expected": initial, "reason": "Grant terms"}).status_code == 200
     b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=80000))
     url=f"/funding/{f['id']}/carry-forward"
     payload=dict(destination_year="2027-2028",cents=30000,reason="Approved carry")
@@ -127,6 +132,8 @@ def test_carry_forward_conservation(client):
     dest=rows[t["destination_id"]]
     assert dest["remaining_cents"]==30000 and dest["received_cents"]==0
     assert dest["eligible_supplier"]=="Test"
+    assert {name: dest[name] for name in rules} == rules
+    assert client.patch(rules_url, json=initial | {"expected": rules, "reason": "Updated terms"}).status_code == 422
     expiry_change = dict(expiry="2028-06-30", reason="Updated grant terms")
     assert client.patch(f"/funding/{f['id']}/expiry", json=expiry_change).status_code == 422
     assert client.patch(f"/funding/{dest['id']}/expiry", json=expiry_change).status_code == 422
@@ -164,14 +171,16 @@ def test_excel_import_atomic_and_duplicate(client):
     from io import BytesIO
     from base64 import b64encode
     from openpyxl import Workbook
-    f=create(client,"/funding",dict(name="Import grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000))
+    f=create(client,"/funding",dict(name="Import grant",academic_year="2026-2027",kind="cash",expected_cents=100000,received_cents=100000,eligible_suppliers=["Test", "Alternate shop"]))
     b=create(client,"/budgets",dict(funding_id=f["id"],program_code="ASUFCGR",cents=50000))
     headers=["external_id","purchase_date","supplier","purchase_type","description","amount","budget_id"]
-    def payload(amount):
-        w=Workbook(); s=w.active;s.append(headers);s.append(["legacy-1","2026-11-01","Test","Groceries","",100,b["id"]]);s.append(["legacy-2","2026-11-02","Test","Groceries","",amount,b["id"]]);out=BytesIO();w.save(out)
+    def payload(amount, supplier="Test"):
+        w=Workbook(); s=w.active;s.append(headers);s.append(["legacy-1","2026-11-01","Test","Groceries","",100,b["id"]]);s.append(["legacy-2","2026-11-02",supplier,"Groceries","",amount,b["id"]]);out=BytesIO();w.save(out)
         return dict(content_base64=b64encode(out.getvalue()).decode(),sheet=s.title,mapping={k:k for k in headers})
     assert not client.post("/imports/preview",json=payload(500)).json()["valid"]
     assert client.post("/imports/commit",json=payload(500)).status_code==422
+    assert client.post("/imports/preview",json=payload(200, "Other shop")).json()["validation_error"] == "Supplier not eligible"
+    assert client.post("/imports/commit",json=payload(200, "Other shop")).status_code==422
     assert client.get("/transactions").json()==[]
     assert client.post("/imports/preview",json=payload(200)).json()["valid"]
     assert client.get("/transactions").json()==[]
@@ -265,6 +274,63 @@ def test_restriction_suggestions(client):
     p=dict(program_code="ASUFCGR",academic_year="2026-2027",kind="cash",supplier="Shop",purchase_date="2026-11-01",cents=1000,purchase_type="Equipment")
     assert client.post("/allocation-suggestions",json=p).json()["unallocated_cents"]==1000
     assert client.post("/allocation-suggestions",json=p|{"purchase_type":"Groceries"}).json()["allocations"]==[{"budget_id":b["id"],"cents":1000}]
+
+def test_funding_spending_rules_match_purchases_and_suggestions(client):
+    rules = dict(
+        eligible_programs=["ASUFCGR", "ASUFCFSBP"],
+        eligible_suppliers=["Fictional Market", "Fictional Distributor"],
+        eligible_purchase_types=["Food", "Supplies"],
+    )
+    source = create(client, "/funding", dict(
+        name="Fictional restricted credits", academic_year="2026-2027", kind="credit",
+        expected_cents=10_000, received_cents=10_000,
+    ) | rules | {"eligible_suppliers": [*rules["eligible_suppliers"], " FICTIONAL MARKET "]})
+    assert {name: source[name] for name in rules} == rules
+
+    budget = create(client, "/budgets", dict(funding_id=source["id"], program_code="ASUFCGR", cents=6_000))
+    create(client, "/budgets", dict(funding_id=source["id"], program_code="ASUFCFSBP", cents=4_000))
+    assert client.post("/budgets", json=dict(funding_id=source["id"], program_code="ASUFCSIR", cents=1)).json()["detail"] == "Program not eligible"
+
+    purchase = dict(purchase_date="2026-10-03", cents=1_000, supplier="fictional distributor", purchase_type="Supplies")
+    suggestion = purchase | dict(program_code="ASUFCGR", academic_year="2026-2027", kind="credit")
+    allocation = dict(budget_id=budget["id"], cents=1_000)
+    assert client.post("/allocation-suggestions", json=suggestion).json()["allocations"] == [allocation]
+    for invalid in ({"supplier": "Other Store"}, {"purchase_type": "Equipment"}):
+        assert client.post("/allocation-suggestions", json=suggestion | invalid).json()["allocations"] == []
+        assert client.post("/transactions", json=purchase | invalid | {"allocations": [allocation]}).status_code == 422
+    create(client, "/transactions", purchase | {"allocations": [allocation]})
+
+    url = f"/funding/{source['id']}/eligibility"
+    change = rules | {"expected": rules, "reason": "Fictional award amendment"}
+    assert "budget" in client.patch(url, json=change | {"eligible_programs": ["ASUFCGR"]}).json()["detail"]
+    assert "spending" in client.patch(url, json=change | {"eligible_purchase_types": ["Food"]}).json()["detail"]
+    assert client.patch(f"/funding/{source['id']}/purchase-type", json={"purchase_type": None, "reason": "Legacy editor"}).status_code == 422
+    status = client.patch(url, json=change | {"eligible_purchase_types": ["Supplies"]})
+    assert status.status_code == 200, status.text
+    assert client.patch(url, json=change).status_code == 409
+    audit = next(event for event in client.get("/audit").json() if event["action"] == "restriction_changed")
+    assert audit["details"]["before"] == rules
+    assert audit["details"]["after"]["eligible_purchase_types"] == ["Supplies"]
+
+def test_legacy_funding_rules_can_be_cleared_without_reappearing(client):
+    from app.main import db
+    source = create(client, "/funding", dict(
+        name="Fictional legacy source", academic_year="2026-2027", kind="cash", expected_cents=5_000,
+        received_cents=5_000, eligible_program="ASUFCGR", eligible_supplier="Fictional Store",
+    ))
+    with db() as c:
+        c.execute("INSERT INTO funding_purchase_type VALUES (%s,%s)", (source["id"], "Food"))
+    previous = dict(eligible_programs=["ASUFCGR"], eligible_suppliers=["Fictional Store"], eligible_purchase_types=["Food"])
+    listed = client.get("/funding").json()[0]
+    assert {name: listed[name] for name in previous} == previous
+    assert listed["eligible_purchase_type"] == "Food"
+    empty = dict(eligible_programs=[], eligible_suppliers=[], eligible_purchase_types=[])
+    response = client.patch(f"/funding/{source['id']}/eligibility", json=empty | {"expected": previous, "reason": "Fictional approval"})
+    assert response.status_code == 200, response.text
+    listed = client.get("/funding").json()[0]
+    assert {name: listed[name] for name in empty} == empty
+    assert listed["eligible_program"] is None
+    create(client, "/budgets", dict(funding_id=source["id"], program_code="ASUFCFSBP", cents=5_000))
 
 def test_session_security(client):
     from app.main import db, COOKIE

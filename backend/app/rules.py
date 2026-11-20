@@ -1,5 +1,27 @@
 from datetime import date
 
+def restriction_allows(row: dict, field: str, value: str) -> bool:
+    allowed = row.get(field + "s")
+    if allowed is None:
+        legacy = row.get(field)
+        allowed = [legacy] if legacy else []
+    if not allowed:
+        return True
+    if field == "eligible_program":
+        return value in allowed
+    if field == "eligible_supplier":
+        return any(value.casefold() == item.casefold() for item in allowed)
+    return any(value.strip().casefold() == item.strip().casefold() for item in allowed)
+
+def spending_restriction(row: dict, program: str, supplier: str, purchase_type: str) -> str | None:
+    if not restriction_allows(row, "eligible_program", program):
+        return "Program not eligible"
+    if not restriction_allows(row, "eligible_purchase_type", purchase_type):
+        return "Purchase type not eligible"
+    if not restriction_allows(row, "eligible_supplier", supplier):
+        return "Supplier not eligible"
+    return None
+
 def validate_purchase(total: int, allocations: list[dict], purchase_date: date, supplier: str, purchase_type: str = ''):
     if total <= 0 or not allocations or sum(a["cents"] for a in allocations) != total:
         raise ValueError("Allocations must equal a positive purchase total")
@@ -12,12 +34,8 @@ def validate_purchase(total: int, allocations: list[dict], purchase_date: date, 
             raise ValueError("Insufficient budget")
         if a["expiry"] and (purchase_date > a["expiry"] or date.today() > a["expiry"]):
             raise ValueError("Funding expired")
-        if a["eligible_program"] and a["eligible_program"] != a["program_code"]:
-            raise ValueError("Program not eligible")
-        if a.get("eligible_purchase_type") and a["eligible_purchase_type"].strip().casefold()!=purchase_type.strip().casefold():
-            raise ValueError("Purchase type not eligible")
-        if a["eligible_supplier"] and a["eligible_supplier"].casefold() != supplier.casefold():
-            raise ValueError("Supplier not eligible")
+        if error := spending_restriction(a, a["program_code"], supplier, purchase_type):
+            raise ValueError(error)
     for fund in {a["funding_id"] for a in allocations}:
         group = [a for a in allocations if a["funding_id"] == fund]
         if sum(a["cents"] for a in group) > group[0]["fund_remaining"]:
