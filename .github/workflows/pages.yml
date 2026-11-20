@@ -22,8 +22,9 @@ jobs:
         working-directory: frontend
       - run: npm run build:pages
         working-directory: frontend
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --only-shell chromium
         working-directory: frontend
+        timeout-minutes: 4
       - run: npm run test:pages
         working-directory: frontend
       - name: Record the tested entry point
@@ -60,11 +61,13 @@ jobs:
         with:
           node-version: '22'
       - run: npm install
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --only-shell chromium
+        timeout-minutes: 4
       - name: Verify the deployed demo in Chromium
         env:
           ASUFC_PAGES_URL: ${{ needs.deploy.outputs.page-url }}
           ASUFC_PAGES_INDEX_SHA256: ${{ needs.build.outputs.index-sha256 }}
         run: |
-          test -n "$ASUFC_PAGES_URL" && test -n "$ASUFC_PAGES_INDEX_SHA256"
+          test -n "$ASUFC_PAGES_URL"
+          test -n "$ASUFC_PAGES_INDEX_SHA256"
           npm run test:pages
