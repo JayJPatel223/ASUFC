@@ -101,3 +101,9 @@ CI 44605369849: dependency audit, backend/frontend, gateway, restore, monitor pa
 
 ## Public Pages demo
 Added isolated compile-time Pages mode, fictional in-memory mock transport and clearly marked demo entry, repository base path, compiled artifact deployment workflow and browser regression. Public demo exercises basic financial flows; backend-only operations are unavailable. Pages source must be switched to GitHub Actions by repository owner. No real data or secrets included. CI and deployment pending.
+
+## 2026-11-20 — Public Pages deployment investigation
+
+At `11ef66f`, both the legacy branch build and the custom React workflow deployed on November 19. The legacy artifact (run `44607406476`) used a Jekyll-generated root `index.html` containing the README. The custom artifact (run `44607406654`) put the compiled React entry point at the root with JavaScript and CSS under `assets/`. The custom deployment finished last, and the public HTML, JavaScript and CSS matched its artifact byte for byte before this change. The exact client-side duration of the README display is unknown.
+
+Pages is configured to use GitHub Actions and enforce HTTPS. The dedicated workflow serializes runs and verifies the deployed HTML against the tested entry point before a live Chromium check. The browser regression also tests the seeded balances and rejects API traffic, unexpected origins and browser errors. Updated the workflow, the Pages Playwright configuration and spec, and added the persistent development, context and roadmap files. Future repository review and staff milestone work should use fictional regression data.

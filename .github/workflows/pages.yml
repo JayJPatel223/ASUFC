@@ -5,9 +5,14 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: public-pages-demo
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      index-sha256: ${{ steps.index.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,14 +26,20 @@ jobs:
         working-directory: frontend
       - run: npm run test:pages
         working-directory: frontend
+      - name: Record the tested entry point
+        id: index
+        run: echo "sha256=$(sha256sum frontend/dist/index.html | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/dist
   deploy:
+    if: github.ref == 'refs/heads/main'
     needs: build
     permissions:
       pages: write
       id-token: write
+    outputs:
+      page-url: ${{ steps.deployment.outputs.page_url }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -37,3 +48,23 @@ jobs:
       - name: Deploy compiled demo
         id: deployment
         uses: actions/deploy-pages@v4
+  verify:
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      - name: Verify the deployed demo in Chromium
+        env:
+          ASUFC_PAGES_URL: ${{ needs.deploy.outputs.page-url }}
+          ASUFC_PAGES_INDEX_SHA256: ${{ needs.build.outputs.index-sha256 }}
+        run: |
+          test -n "$ASUFC_PAGES_URL" && test -n "$ASUFC_PAGES_INDEX_SHA256"
+          npm run test:pages
