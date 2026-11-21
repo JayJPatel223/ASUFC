@@ -1,16 +1,12 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
+const { randomBytes } = require('node:crypto');
 const { createWriteStream, mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { createInterface } = require('node:readline');
-const { pathToFileURL } = require('node:url');
-
-const setupPath = path.join(__dirname, 'setup.html');
-const setupUrl = pathToFileURL(setupPath).href;
 let window;
 let runtime;
 let staffOrigin;
-let canSetPassword = false;
 let stopping = false;
 let selectedBackup;
 
@@ -31,6 +27,7 @@ async function showStaffWindow() {
   }
   const state = path.join(app.getPath('userData'), 'staff-data');
   mkdirSync(state, { recursive: true, mode: 0o700 });
+  const launchKey = randomBytes(32).toString('hex');
   const bundle = path.join(app.isPackaged ? process.resourcesPath : __dirname, 'runtime');
   const executable = process.platform === 'win32' ? 'asufc-backend.exe' : 'asufc-backend';
   window = new BrowserWindow({
@@ -49,7 +46,7 @@ async function showStaffWindow() {
   });
   const { webContents } = window;
   await webContents.session.setProxy({ mode: 'direct' });
-  const canNavigate = url => url === setupUrl || (staffOrigin && new URL(url).origin === staffOrigin);
+  const canNavigate = url => staffOrigin && new URL(url).origin === staffOrigin;
   webContents.on('will-navigate', (event, url) => { if (!canNavigate(url)) event.preventDefault(); });
   webContents.on('will-redirect', (event, url) => { if (!canNavigate(url)) event.preventDefault(); });
   webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -75,7 +72,7 @@ async function showStaffWindow() {
   runtime = child;
   child.stderr.pipe(createWriteStream(path.join(state, 'desktop.log'), { flags: 'w', mode: 0o600 }));
   child.stdin.on('error', () => {
-    if (!stopping) stopWithError('The local ledger stopped during sign-in setup.');
+    if (!stopping) stopWithError('The local ledger could not connect to the desktop app.');
   });
   child.on('error', () => stopWithError('The bundled staff runtime could not start. Reinstall the app or contact support.'));
   child.on('close', () => {
@@ -83,45 +80,56 @@ async function showStaffWindow() {
     if (!stopping) stopWithError('The local ledger stopped. Its log is in the ASUFC Finance application data folder.');
   });
 
-  const fromSetup = event => canSetPassword && event.sender === webContents && event.senderFrame?.url === setupUrl;
-  const submitSetup = (event, password, restorePath) => {
-    if (!fromSetup(event)) return false;
-    if (typeof password !== 'string' || password.length < 16 || password.length > 1024) return false;
-    canSetPassword = false;
-    runtime.stdin.write(JSON.stringify({ password, restore_path: restorePath }) + '\n');
-    return true;
+  const fromLedger = event => {
+    const frame = event.senderFrame;
+    return staffOrigin && event.sender === webContents && frame && !frame.parent && frame.url.startsWith(staffOrigin + '/');
   };
-  ipcMain.handle('asufc:initial-password', (event, password) => submitSetup(event, password));
   ipcMain.handle('asufc:choose-backup', async event => {
-    if (!fromSetup(event)) return '';
+    if (!fromLedger(event)) return '';
     const selection = await dialog.showOpenDialog(window, {
       title: 'Choose an ASUFC Finance backup',
       properties: ['openFile'],
       filters: [{ name: 'ASUFC Finance backup', extensions: ['asufcbak'] }],
     });
-    if (!fromSetup(event)) return '';
+    if (!fromLedger(event)) return '';
     selectedBackup = selection.filePaths[0];
     return selectedBackup ? path.basename(selectedBackup) : '';
   });
-  ipcMain.handle('asufc:restore-backup', (event, password) => {
-    return Boolean(selectedBackup && submitSetup(event, password, selectedBackup));
+  ipcMain.handle('asufc:restore-backup', async (event, passphrase) => {
+    if (!fromLedger(event) || !selectedBackup || typeof passphrase !== 'string' ||
+        passphrase.length < 16 || passphrase.length > 1024) {
+      return {ok: false, message: 'Choose a backup file and enter its passphrase.'};
+    }
+    try {
+      const response = await webContents.session.fetch(staffOrigin + '/api/desktop/restore', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-ASUFC-Request': '1', 'X-ASUFC-Launcher': launchKey},
+        body: JSON.stringify({path: selectedBackup, passphrase}),
+        redirect: 'error',
+      });
+      if (response.ok) {
+        selectedBackup = undefined;
+        return {ok: true};
+      }
+      const failure = await response.json().catch(() => null);
+      if (typeof failure?.detail === 'string') return {ok: false, message: failure.detail};
+    } catch {
+      return {ok: false, message: 'Could not reach the local ledger. Close and reopen the app.'};
+    }
+    return {ok: false, message: 'The backup could not be restored.'};
   });
 
   createInterface({ input: child.stdout }).on('line', async line => {
     if (stopping) return;
     try {
       const event = JSON.parse(line);
-      if (event.status === 'setup_required') {
-        canSetPassword = true;
-        await window.loadFile(setupPath);
-        window.show();
-      } else if (event.status === 'setup_error') {
-        canSetPassword = true;
-        webContents.send('asufc:password-error', event.message);
-      } else if (event.status === 'ready' && Number.isInteger(event.port) && event.port > 0 && event.port < 65536) {
-        canSetPassword = false;
-        selectedBackup = undefined;
+      if (event.status === 'ready' && Number.isInteger(event.port) && event.port > 0 && event.port < 65536) {
         staffOrigin = 'http://127.0.0.1:' + event.port;
+        // This partition lives for one app launch. The renderer cannot read the credential.
+        await webContents.session.cookies.set({
+          url: staffOrigin, name: 'asufc_desktop_session', value: launchKey,
+          path: '/api', httpOnly: true, sameSite: 'strict',
+        });
         await window.loadURL(staffOrigin);
         window.show();
       } else if (event.status === 'error') {
@@ -131,6 +139,7 @@ async function showStaffWindow() {
       stopWithError('The staff runtime could not load the application window.');
     }
   });
+  child.stdin.write(launchKey + '\n');
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();

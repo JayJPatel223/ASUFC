@@ -16,6 +16,8 @@ See docs/architecture.md and PROGRESS.md for limitations. No production readines
 
 ## Offline desktop edition
 
+Version 0.4 opens directly to **Overview** under the designated operating-system account. The desktop launcher authorizes the local API for each launch. Use **Account** to save or restore an encrypted backup. An existing 0.3 ledger opens in place when the update runs under the same operating-system profile.
+
 See the [staff handbook](docs/staff-handbook.md) for everyday use, the [offline desktop guide](docs/offline-desktop.md) for building, signing and testing installers, and the [project handover](docs/university-handover.md) for requirements, diagrams and verification.
 
 ## Private staff workspace
@@ -28,7 +30,7 @@ docker compose -p asufc-staff -f docker-compose.yml -f docker-compose.staff.yml 
 
 Open `http://127.0.0.1:8080` on the host. The gateway binds to loopback, and the API and PostgreSQL stay on the Compose network. Set `ASUFC_STAFF_PORT` in your private Compose environment if port 8080 is taken. The Compose project keeps its own PostgreSQL volume across restarts. Use the separate HTTPS configuration on an approved production host.
 
-## Staff credentials
+## Web staff credentials
 STAFF_PASSWORD is a one-time bootstrap password (minimum 16 characters); subsequent changes are stored as salted scrypt hashes. Change password in Account; all sessions are revoked. Trusted host operator recovery: `docker compose exec api python -m app.reset_password`. Password is entered interactively, never as a shell argument. Keep STAFF_USER stable; changing it is not an account handover procedure.
 
 ## Funding rules

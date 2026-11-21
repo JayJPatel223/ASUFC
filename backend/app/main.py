@@ -23,10 +23,13 @@ from .receipt_files import register_receipts
 def db():
     return psycopg.connect(row_factory=dict_row)
 
+def initialize_schema(connection):
+    connection.execute(Path(__file__).with_name("schema.sql").read_text(encoding="utf-8"))
+
 @asynccontextmanager
 async def lifespan(app):
     with db() as conn:
-        conn.execute(Path(__file__).with_name("schema.sql").read_text())
+        initialize_schema(conn)
         conn.execute("SELECT pg_advisory_xact_lock(2663002)")
         user=os.environ.get("STAFF_USER","staff")
         if not conn.execute("SELECT 1 FROM staff_credential WHERE username=%s",(user,)).fetchone():

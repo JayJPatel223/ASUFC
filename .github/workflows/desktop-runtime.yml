@@ -71,7 +71,7 @@ jobs:
         working-directory: desktop
       - run: npm audit
         working-directory: desktop
-      - name: Verify first launch, sign-in and reopening the desktop window
+      - name: Verify direct launch and reopening the desktop window
         shell: bash
         run: |
           set -euo pipefail

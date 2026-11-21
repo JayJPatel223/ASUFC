@@ -24,6 +24,30 @@ class BackupError(ValueError):
     pass
 
 
+class LedgerNotEmpty(BackupError):
+    pass
+
+
+def restore_empty_ledger(connection, file, password):
+    tables = {table: sql.Identifier("public", table) for table in TABLES}
+    connection.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE NOWAIT").format(
+        sql.SQL(", ").join(tables.values()),
+    ))
+    starter_programs = {
+        ("ASUFCGR", "General Restocks"),
+        ("ASUFCFSBP", "Foodsharing Breakfast Program"),
+        ("ASUFCE&W", "Events & Workshops"),
+        ("ASUFCSIR", "Specialty Item Restocks"),
+    }
+    programs = {(row["code"], row["name"]) for row in connection.execute("SELECT code,name FROM program")}
+    if programs != starter_programs or any(
+        connection.execute(sql.SQL("SELECT 1 FROM {} LIMIT 1").format(identifier)).fetchone()
+        for table, identifier in tables.items() if table not in ("program", "staff_credential")
+    ):
+        raise LedgerNotEmpty("Restore requires a fresh ledger. Use a new operating-system profile to protect existing records.")
+    restore_backup(connection, file, password)
+
+
 def exact(file, size):
     data = file.read(size)
     if len(data) != size:
@@ -141,5 +165,3 @@ def restore_backup(connection, file, password):
                 ))
     if file.read(1):
         raise BackupError("The backup has unexpected trailing data")
-    if not connection.execute("SELECT 1 FROM staff_credential WHERE username='staff'").fetchone():
-        raise BackupError("The backup does not contain the desktop staff account")

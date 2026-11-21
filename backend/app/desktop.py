@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import date
 from tempfile import TemporaryFile
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 import psycopg
 from pydantic import BaseModel, Field
@@ -24,8 +24,10 @@ from starlette.staticfiles import StaticFiles
 import uvicorn
 
 from .credentials import validate_password
-from .desktop_backup import BLOCK, BackupError, restore_backup, write_backup
-from .main import app, db, safe_validation_error, staff
+from .desktop_backup import BLOCK, BackupError, LedgerNotEmpty, restore_empty_ledger, write_backup
+from .main import app, db, initialize_schema, safe_validation_error, staff
+
+DESKTOP_COOKIE = "asufc_desktop_session"
 
 
 def announce(status, **details):
@@ -116,45 +118,28 @@ def local_database(state_dir, bin_dir):
         postgres_tool(bin_dir, "pg_ctl", "-D", database_dir, "-m", "fast", "-w", "-t", "25", "stop")
 
 
-def prepare_staff_account():
-    os.environ.update(STAFF_USER="staff", SESSION_SECURE="0")
-    os.environ.pop("STAFF_PASSWORD", None)
-    with db() as database:
-        accounts_exist = database.execute("SELECT to_regclass('public.staff_credential') AS name").fetchone()["name"]
-        if accounts_exist and database.execute(
-            "SELECT 1 FROM staff_credential WHERE username=%s", ("staff",)
-        ).fetchone():
-            return True
-
-    announce("setup_required")
-    for line in sys.stdin:
-        try:
-            payload = json.loads(line)
-            password = payload["password"]
-            if not isinstance(password, str):
-                raise ValueError
-            validate_password(password)
-        except (ValueError, TypeError, KeyError, UnicodeError):
-            announce("setup_error", message="Choose a unique password of 16 to 1024 characters.")
-        else:
-            if "restore_path" not in payload:
-                os.environ["STAFF_PASSWORD"] = password
-                return True
-            try:
-                with Path(payload["restore_path"]).open("rb") as file, db() as connection:
-                    connection.execute(Path(__file__).with_name("schema.sql").read_text(encoding="utf-8"))
-                    restore_backup(connection, file, password)
-            except BackupError as error:
-                announce("setup_error", message=str(error))
-            except (OSError, TypeError, ValueError, psycopg.Error):
-                announce("setup_error", message="The backup could not be restored. Check the file and try again.")
-            else:
-                return True
-    return False
-
-
 class BackupRequest(BaseModel):
     passphrase: str = Field(min_length=16, max_length=1024)
+
+
+class RestoreRequest(BackupRequest):
+    path: str = Field(min_length=1, max_length=32767)
+
+
+def restore_local_backup(payload: RestoreRequest):
+    # This path is supplied by the privileged desktop launcher after a native file picker.
+    try:
+        with Path(payload.path).open("rb") as file, db() as connection:
+            restore_empty_ledger(connection, file, payload.passphrase)
+    except LedgerNotEmpty as error:
+        raise HTTPException(409, str(error)) from None
+    except psycopg.errors.LockNotAvailable:
+        raise HTTPException(409, "The ledger is busy. Try restoring again in a moment.") from None
+    except BackupError as error:
+        raise HTTPException(422, str(error)) from None
+    except (OSError, ValueError, psycopg.Error):
+        raise HTTPException(422, "The backup could not be restored. Check the file and try again.") from None
+    return {"ok": True}
 
 
 backup_lock = threading.Lock()
@@ -217,28 +202,50 @@ def download_backup(key: str):
     })
 
 
-def serve_staff(frontend_dir):
+def serve_staff(frontend_dir, launch_key):
+    def authorize(request, supplied):
+        if len(supplied) != len(launch_key) or not secrets.compare_digest(supplied.encode(), launch_key.encode()):
+            raise HTTPException(401, "Open the ledger in ASUFC Finance.")
+        if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("X-ASUFC-Request") != "1":
+            raise HTTPException(403, "Missing request protection header")
+        return "staff"
+
+    def desktop_staff(request: Request):
+        return authorize(request, request.cookies.get(DESKTOP_COOKIE, ""))
+
+    def desktop_launcher(request: Request):
+        return authorize(request, request.headers.get("X-ASUFC-Launcher", ""))
+
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
 
         @asynccontextmanager
         async def lifespan(_):
-            async with app.router.lifespan_context(app):
-                os.environ.pop("STAFF_PASSWORD", None)
+            with db() as connection:
+                initialize_schema(connection)
+            app.dependency_overrides[staff] = desktop_staff
+            try:
                 yield
+            finally:
+                del app.dependency_overrides[staff]
 
         desktop_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
         desktop_app.add_exception_handler(RequestValidationError, safe_validation_error)
         desktop_app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1"])
-        desktop_app.add_api_route("/api/desktop/backup", create_backup, methods=["POST"], dependencies=[Depends(staff)])
-        desktop_app.add_api_route("/api/desktop/backup/{key}", download_backup, methods=["GET"], dependencies=[Depends(staff)])
+        desktop_app.add_api_route("/api/desktop/backup", create_backup, methods=["POST"], dependencies=[Depends(desktop_staff)])
+        desktop_app.add_api_route("/api/desktop/backup/{key}", download_backup, methods=["GET"], dependencies=[Depends(desktop_staff)])
+        desktop_app.add_api_route("/api/desktop/restore", restore_local_backup, methods=["POST"], dependencies=[Depends(desktop_launcher)])
         desktop_app.mount("/api", app)
         desktop_app.mount("/", StaticFiles(directory=frontend_dir, html=True))
 
         @desktop_app.middleware("http")
         async def security_headers(request, call_next):
-            response = await call_next(request)
+            # The deployed staff web API keeps its password and session routes.
+            if request.url.path.startswith("/api/auth/"):
+                response = Response(status_code=404)
+            else:
+                response = await call_next(request)
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "
                 "img-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; "
@@ -283,9 +290,14 @@ def main():
     try:
         if not (args.frontend / "index.html").is_file():
             raise ValueError("The staff application files are missing")
+        # The launcher sends the per-process credential over its private stdin pipe.
+        launch_line = sys.stdin.readline(66)
+        launch_key = launch_line.removesuffix("\n")
+        if not launch_line.endswith("\n") or len(launch_key) != 64 or any(ch not in "0123456789abcdef" for ch in launch_key):
+            raise ValueError("Start the local ledger from the ASUFC Finance desktop app.")
+        os.environ["STAFF_USER"] = "staff"
         with local_database(args.state_dir.resolve(), args.postgres_bin.resolve()):
-            if prepare_staff_account():
-                serve_staff(args.frontend.resolve())
+            serve_staff(args.frontend.resolve(), launch_key)
     except ValueError as error:
         announce("error", message=str(error))
         return 1

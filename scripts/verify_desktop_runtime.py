@@ -6,9 +6,11 @@ from contextlib import contextmanager
 from http.cookiejar import CookieJar
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 from queue import Queue
 import re
+import secrets
 import subprocess
 from tempfile import TemporaryDirectory
 import threading
@@ -25,7 +27,8 @@ PDF = b"%PDF-1.4\n% Example receipt for testing\n%%EOF\n"
 
 
 @contextmanager
-def launch(command, state, needs_setup, restore=None):
+def launch(command, state, *, legacy=False):
+    key = secrets.token_hex(32)
     with subprocess.Popen(
         [*command, "--state-dir", str(state)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         text=True, encoding="utf-8",
@@ -39,33 +42,18 @@ def launch(command, state, needs_setup, restore=None):
 
         threading.Thread(target=read_events, daemon=True).start()
         try:
-            event = events.get(timeout=90)
-            if needs_setup:
-                if event["status"] == "error" and (state / "postgres.log").is_file():
-                    print((state / "postgres.log").read_text(encoding="utf-8", errors="replace"))
+            if legacy:
+                event = events.get(timeout=90)
                 assert event["status"] == "setup_required", event
-                process.stdin.write(json.dumps({"password": "short"}) + "\n")
-                process.stdin.flush()
-                assert events.get(timeout=10)["status"] == "setup_error"
-                if restore:
-                    damaged = restore.with_suffix(".damaged")
-                    damaged.write_bytes(restore.read_bytes()[:-1])
-                    for file, password, message in [
-                        (restore, "a long but wrong passphrase", "incorrect"),
-                        (damaged, BACKUP_PASSWORD, "incomplete"),
-                    ]:
-                        process.stdin.write(json.dumps({"password": password, "restore_path": str(file)}) + "\n")
-                        process.stdin.flush()
-                        failure = events.get(timeout=45)
-                        assert failure["status"] == "setup_error" and message in failure["message"], failure
-                    payload = {"password": BACKUP_PASSWORD, "restore_path": str(restore)}
-                else:
-                    payload = {"password": PASSWORD}
-                process.stdin.write(json.dumps(payload) + "\n")
-                process.stdin.flush()
-                event = events.get(timeout=45)
+                process.stdin.write(json.dumps({"password": PASSWORD}) + "\n")
+            else:
+                process.stdin.write(key + "\n")
+            process.stdin.flush()
+            event = events.get(timeout=90)
+            if event["status"] == "error" and (state / "postgres.log").is_file():
+                print((state / "postgres.log").read_text(encoding="utf-8", errors="replace"))
             assert event["status"] == "ready", event
-            yield f"http://127.0.0.1:{event['port']}"
+            yield f"http://127.0.0.1:{event['port']}", key
         finally:
             process.stdin.close()
             try:
@@ -76,15 +64,52 @@ def launch(command, state, needs_setup, restore=None):
         assert process.returncode == 0, process.returncode
 
 
-def verify(base, record, backup=None):
-    client = build_opener(ProxyHandler({}), HTTPCookieProcessor(CookieJar()))
+def request_from(base, *, legacy=False):
+    client = build_opener(ProxyHandler({}), HTTPCookieProcessor(CookieJar())) if legacy else build_opener(ProxyHandler({}))
+
+    def fetch(path, data=None, *, key=None, launcher=None, protect=True):
+        headers = {"Content-Type": "application/json"}
+        if protect:
+            headers["X-ASUFC-Request"] = "1"
+        if key:
+            headers["Cookie"] = "asufc_desktop_session=" + key
+        if launcher:
+            headers["X-ASUFC-Launcher"] = launcher
+        return client.open(Request(base + path, data=json.dumps(data).encode("utf-8") if data is not None else None,
+                                   headers=headers), timeout=20)
+
+    return fetch
+
+
+def reject(fetch, path, code, data=None, **options):
+    try:
+        with fetch(path, data, **options):
+            raise AssertionError(f"{path} did not return {code}")
+    except HTTPError as error:
+        with error:
+            body = error.read()
+        assert error.code == code, (error.code, body)
+        return json.loads(body)["detail"] if body else ""
+
+
+def read_json(fetch, path, data=None, **options):
+    with fetch(path, data, **options) as response:
+        return json.load(response)
+
+
+def restore(fetch, key, archive, passphrase, code=None):
+    payload = {"path": str(archive), "passphrase": passphrase}
+    if code is not None:
+        return reject(fetch, "/api/desktop/restore", code, payload, launcher=key)
+    assert read_json(fetch, "/api/desktop/restore", payload, launcher=key) == {"ok": True}
+
+
+def verify(base, key, record, backup=None, previous_key=None, legacy=False):
+    unauthenticated = request_from(base)
+    client = request_from(base, legacy=legacy)
 
     def fetch(path, data=None):
-        return client.open(Request(
-            base + path,
-            data=json.dumps(data).encode("utf-8") if data is not None else None,
-            headers={"Content-Type": "application/json", "X-ASUFC-Request": "1"},
-        ), timeout=5)
+        return client(path, data, key=None if legacy else key)
 
     for attempt in range(30):
         try:
@@ -103,25 +128,24 @@ def verify(base, record, backup=None):
         with fetch(asset) as response:
             assert response.status == 200 and response.read()
 
-    def reject(path, code, data=None):
-        try:
-            with fetch(path, data):
-                raise AssertionError(f"{path} did not return {code}")
-        except HTTPError as error:
-            with error:
-                body = error.read()
-            assert error.code == code, (error.code, body)
-
-    reject("/api/funding", 401)
-    reject("/api/transactions/1/files/1", 401)
-    reject("/api/desktop/backup", 401, {"passphrase": BACKUP_PASSWORD})
-    reject("/api/assistant/ask", 401, {"year": YEAR, "question": "How much cash funding remains?"})
+    reject(unauthenticated, "/api/funding", 401)
+    reject(unauthenticated, "/api/transactions/1/files/1", 401)
+    reject(unauthenticated, "/api/desktop/backup", 401, {"passphrase": BACKUP_PASSWORD})
+    reject(unauthenticated, "/api/assistant/ask", 401, {"year": YEAR, "question": "How much cash funding remains?"})
+    if previous_key:
+        reject(unauthenticated, "/api/funding", 401, key=previous_key)
 
     def api(path, data=None):
-        with fetch("/api" + path, data) as response:
-            return json.load(response)
+        return read_json(fetch, "/api" + path, data)
 
-    assert api("/auth/login", {"username": "staff", "password": PASSWORD})["username"] == "staff"
+    credentials = {"username": "staff", "password": PASSWORD}
+    if legacy:
+        assert api("/auth/login", credentials)["username"] == "staff"
+    else:
+        reject(fetch, "/api/auth/login", 404, credentials)
+        reject(fetch, "/api/auth/session", 404)
+        reject(unauthenticated, "/api/desktop/backup", 403, {"passphrase": BACKUP_PASSWORD}, key=key, protect=False)
+        reject(fetch, "/api/desktop/restore", 401, {"path": "launcher-only.asufcbak", "passphrase": BACKUP_PASSWORD})
     if record:
         source = {"name": "Fictional offline grant", "academic_year": YEAR, "kind": "cash",
                   "expected_cents": 12000, "received_cents": 10000, "carry_status": "prohibited"}
@@ -132,10 +156,10 @@ def verify(base, record, backup=None):
             "semesters": [{"name": "Example fall", "starts_on": "2026-09-09", "ends_on": "2026-12-20"}],
             "funding": [source], "purchases": [draft, draft | {"supplier": "Another example shop"}],
         }
-        reject("/api/staff-setup", 422, setup | {"funding": [source | {"received_cents": 13000}]})
+        reject(fetch, "/api/staff-setup", 422, setup | {"funding": [source | {"received_cents": 13000}]})
         assert not api("/academic-years")
         assert api("/staff-setup", setup)["pending_purchases"] == 2
-        reject("/api/staff-setup", 409, setup)
+        reject(fetch, "/api/staff-setup", 409, setup)
         assert not api("/transactions")
         first, second = api("/purchase-intake?year=" + YEAR)
         assert first["verify_charge"] and second["verify_charge"]
@@ -147,19 +171,19 @@ def verify(base, record, backup=None):
             "cents": 1250, "allocations": [{"budget_id": budget["id"], "cents": 1250}],
         }
         confirm = f"/purchase-intake/{first['id']}/confirm"
-        reject("/api" + confirm, 422, request)
+        reject(fetch, "/api" + confirm, 422, request)
         request["verification"] = "Fictional statement checked"
         purchase = api(confirm, request)
-        reject("/api" + confirm, 409, request)
+        reject(fetch, "/api" + confirm, 409, request)
         path = f"/transactions/{purchase['id']}/files"
         initial = {"name": "Fictional receipt.png", "content": base64.b64encode(PNG).decode()}
-        reject("/api" + path, 422, initial | {"name": "../receipt.png"})
-        reject("/api" + path, 422, initial | {"content": "AAAA"})
+        reject(fetch, "/api" + path, 422, initial | {"name": "../receipt.png"})
+        reject(fetch, "/api" + path, 422, initial | {"content": "AAAA"})
         receipt = api(path, initial)
-        reject("/api" + path, 409, initial)
+        reject(fetch, "/api" + path, 409, initial)
         api(path, {"name": "Corrected fictional receipt.pdf", "content": base64.b64encode(PDF).decode(),
                    "replaces_id": receipt["id"], "reason": "Fictional replacement for the recovery test"})
-        reject("/api" + path, 409, initial)
+        reject(fetch, "/api" + path, 409, initial)
     report = api("/reports/spending?year=" + YEAR)
     assert report["totals"] == {"cash_cents": 1250, "credit_cents": 0}
     assert report["purchase_count"] == 1
@@ -192,17 +216,18 @@ def verify(base, record, backup=None):
         with ZipFile(BytesIO(response.read())) as workbook:
             assert "xl/workbook.xml" in workbook.namelist()
     if backup:
-        key = api("/desktop/backup", {"passphrase": BACKUP_PASSWORD})["key"]
-        with fetch("/api/desktop/backup/" + key) as archive:
+        backup_key = api("/desktop/backup", {"passphrase": BACKUP_PASSWORD})["key"]
+        with fetch("/api/desktop/backup/" + backup_key) as archive:
             data = archive.read()
         assert data.startswith(b"ASUFCBK")
         assert PDF not in data and b"Fictional offline grant" not in data
         backup.write_bytes(data)
-        reject("/api/desktop/backup/" + key, 404)
+        reject(fetch, "/api/desktop/backup/" + backup_key, 404)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--legacy-runtime", type=Path, help="Optional extracted ASUFC 0.3 runtime for upgrade checks")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Runtime command with frontend and PostgreSQL paths")
     args = parser.parse_args()
     command = args.command[1:] if args.command and args.command[0] == "--" else args.command
@@ -211,14 +236,38 @@ def main():
     with TemporaryDirectory(prefix="asufc-desktop-", ignore_cleanup_errors=True) as path:
         state = Path(path)
         backup = state / "fictional.asufcbak"
-        with launch(command, state, needs_setup=True) as base:
-            verify(base, record=True, backup=backup)
-        assert (state / "ledger" / "PG_VERSION").is_file()
-        with launch(command, state, needs_setup=False) as base:
-            verify(base, record=False)
-        with launch(command, state / "restored-copy", needs_setup=True, restore=backup) as base:
-            verify(base, record=False)
-    print("Verified local purchases, receipt history, reports, restart, and encrypted recovery into a fresh ledger.")
+        with launch(command, state / "original") as (base, original_key):
+            verify(base, original_key, record=True, backup=backup)
+            assert "fresh ledger" in restore(request_from(base), original_key, backup, BACKUP_PASSWORD, 409)
+        assert (state / "original" / "ledger" / "PG_VERSION").is_file()
+        with launch(command, state / "original") as (base, new_key):
+            verify(base, new_key, record=False, previous_key=original_key)
+        with launch(command, state / "restored-copy") as (base, key):
+            fetch = request_from(base)
+            damaged = backup.with_suffix(".damaged")
+            damaged.write_bytes(backup.read_bytes()[:-1])
+            assert "incorrect" in restore(fetch, key, backup, "a long but wrong passphrase", 422)
+            assert "incomplete" in restore(fetch, key, damaged, BACKUP_PASSWORD, 422)
+            assert read_json(fetch, "/api/funding", key=key) == []
+            restore(fetch, key, backup, BACKUP_PASSWORD)
+            verify(base, key, record=False)
+    if args.legacy_runtime:
+        runtime = args.legacy_runtime.resolve()
+        executable = "asufc-backend.exe" if os.name == "nt" else "asufc-backend"
+        legacy_command = [str(runtime / "asufc-backend" / executable), "--frontend", str(runtime / "frontend"),
+                          "--postgres-bin", str(runtime / "postgres" / "bin")]
+        with TemporaryDirectory(prefix="asufc-upgrade-", ignore_cleanup_errors=True) as path:
+            state = Path(path)
+            backup = state / "legacy.asufcbak"
+            with launch(legacy_command, state / "legacy", legacy=True) as (base, key):
+                verify(base, key, record=True, backup=backup, legacy=True)
+            with launch(command, state / "legacy") as (base, key):
+                verify(base, key, record=False)
+            with launch(command, state / "from-legacy-backup") as (base, key):
+                restore(request_from(base), key, backup, BACKUP_PASSWORD)
+                verify(base, key, record=False)
+        print("Verified opening an existing ASUFC 0.3 ledger and restoring a 0.3 backup without a login.")
+    print("Verified launch-only access, purchases, receipt history, reports, restart, and encrypted recovery.")
 
 
 if __name__ == "__main__":

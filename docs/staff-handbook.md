@@ -4,7 +4,7 @@ Use ASUFC Finance on one designated staff computer and operating-system profile.
 
 ## 1. Open the app
 
-Use the installer supplied by your ASUFC project lead. On Windows x64, open the installer and launch **ASUFC Finance** from Start. On macOS, open the disk image for your Mac's chip and drag the app into **Applications**. On Linux x64, open the AppImage supplied for your distribution. First launch asks for a local staff password of at least 16 characters. The login name is **staff**.
+Use the installer supplied by your ASUFC project lead. On Windows x64, open the installer and launch **ASUFC Finance** from Start. On macOS, open the disk image for your Mac's chip and drag the app into **Applications**. On Linux x64, open the AppImage supplied for your distribution. Sign in to the designated computer's operating-system account and open ASUFC Finance. The app goes directly to **Overview**, including on first launch.
 
 Use the installed app for day-to-day work. The GitHub Pages demo contains fictional sample records and resets when its page reloads.
 
@@ -33,10 +33,10 @@ In **Assistant**, ask a short finance question or choose a topic. Check the acad
 
 ## 5. Back up and recover
 
-1. Go to **Account → Encrypted ledger backup**. Enter and confirm a backup passphrase of at least 16 characters. Use a passphrase separate from the staff password.
+1. Go to **Account → Encrypted ledger backup**. Enter and confirm a backup passphrase of at least 16 characters.
 2. Click **Save encrypted backup**. Choose a staff-controlled location on a separate drive or approved storage device. Wait for the save to complete and check that the file ends in `.asufcbak`.
 3. Keep the passphrase in your approved password store. The backup includes the ledger, pending purchases, receipts and audit history. Make a fresh backup before replacing the app or moving computers.
-4. To restore, install the same or a compatible newer app on the replacement computer or a fresh operating-system profile. On the first-launch screen choose **Restore an encrypted backup**, select the file, and enter the backup passphrase.
-5. Sign in using the staff password that was active when the backup was made. Check the latest purchases, receipt history, pending rows and reconciliation totals before making the recovered ledger the one staff use.
+4. To restore, open the same or a compatible newer app on the replacement computer or a fresh operating-system profile. Go to **Account → Restore an encrypted backup**, select the file, and enter the backup passphrase. Use an empty ledger to protect records already in use.
+5. When **Overview** reopens, check the latest purchases, receipt history, pending rows and reconciliation totals before making the recovered ledger the one staff use. Backups from 0.3 can be restored with their backup passphrase.
 
 Keep the previous ledger intact until recovery is verified. Contact the ASUFC project lead if the app gives a startup error, a backup will not restore or you need to hand over staff access.
