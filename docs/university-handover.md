@@ -78,4 +78,16 @@ The desktop runtime listens on loopback, uses a restricted renderer, and stores 
 
 ASUFC owns the staff profile, password custody, backup destination and retention, official financial cutoffs, final grant evidence and item-level eligibility review. The ledger records funding decisions, while staff verify receipts and assign historical purchases. Signed installer distribution and a physically disconnected recovery drill require the designated hardware and publishing credentials.
 
-Financial insights are deterministic. A future model adapter may translate questions to approved intents and explain verified amounts, with any receipt extraction routed through staff review. External model access remains subject to institutional approval. A local OCR or language-model option would require separate accuracy, licensing, offline packaging and resource testing. Forecasts remain unavailable when there are fewer than six consecutive complete months of recorded spending for the selected scope.
+The assistant uses a small offline text classifier trained on fictional example questions. It maps a question to an approved topic, validates the year and program, and calls the same deterministic calculation used by Financial insights. Staff can choose a supported topic directly when the model cannot match their wording. The model reads the question only. Ledger values are retrieved by the application to build the answer and remain on the computer. Forecasts remain unavailable when there are fewer than six consecutive complete months of recorded spending for the selected scope.
+
+```mermaid
+flowchart LR
+  Staff[Staff question or topic] --> Scope[Authenticated scope validation]
+  Scope --> Model[Local intent classifier]
+  Model -->|Confident topic| Ledger[Approved read-only ledger query]
+  Model -->|Unclear wording| Choose[Staff topic selection]
+  Choose --> Ledger
+  Ledger --> Answer[Calculated facts and source screen]
+```
+
+External model access remains subject to institutional approval. A generative model or receipt extraction workflow requires separate evaluation and testing.

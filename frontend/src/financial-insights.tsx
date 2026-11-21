@@ -113,7 +113,7 @@ export function FinancialInsights({api, year, programs}: {api: Api; year: string
 
 function MonthlySpending({months}: {months: Spend[]}) {
   if (!months.length) return <p>No confirmed spending in this selection.</p>;
-  const highest = Math.max(1, ...months.flatMap(row => kinds.map(kind => amount(row, kind))));
+  const highest = months.reduce((max, row) => Math.max(max, row.cash_cents, row.credit_cents), 1);
   return <div className="tablewrap"><table className="spending-trends">
     <thead><tr><th>Month</th>{kinds.map(kind => <th key={kind}>{labels[kind]}</th>)}</tr></thead>
     <tbody>{months.map(row => <tr key={row.label}><th scope="row">{row.label}</th>

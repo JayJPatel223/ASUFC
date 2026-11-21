@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from datetime import date
@@ -12,6 +13,7 @@ from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Respons
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from hashlib import sha256
+from .assistant import MODEL, Topic, answer, mentioned_programs
 from .credentials import hash_password,verify_password,validate_password
 from pydantic import BaseModel, Field
 from .rules import restriction_allows, spending_restriction, validate_purchase
@@ -367,7 +369,9 @@ def dashboard(year: str = "2026-2027"):
         sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a JOIN budget b ON b.id=a.budget_id WHERE b.funding_id=f.id),0)) AS spent
         FROM funding_capacity f WHERE academic_year=%s GROUP BY kind""",(year,)).fetchall(),
         "programs":c.execute("""SELECT b.program_code, sum(b.cents) AS allocated,
-        sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0)) AS spent FROM budget b JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s GROUP BY b.program_code""",(year,)).fetchall()}
+        sum(COALESCE((SELECT sum(a.cents) FROM active_allocation a WHERE a.budget_id=b.id),0)) AS spent FROM budget b JOIN funding f ON f.id=b.funding_id WHERE f.academic_year=%s GROUP BY b.program_code""",(year,)).fetchall(),
+        "pending":c.execute("""SELECT count(*) AS count, coalesce(sum(cents),0) AS cents FROM purchase_intake
+            WHERE academic_year=%s AND confirmed_purchase_id IS NULL""", (year,)).fetchone()}
 
 
 class SuggestionRequest(BaseModel):
@@ -522,7 +526,52 @@ def financial_insights(year: str, program: ProgramCode | None = None):
                 FROM funding_capacity f WHERE f.academic_year=%s ORDER BY f.expiry NULLS LAST,f.id""", (year,)).fetchall()
         period = c.execute("SELECT starts_on,ends_on FROM academic_period WHERE academic_year=%s", (year,)).fetchone() or {}
         spending = summarize(select_report_rows(c, year, program=program))
-        return analyze(spending, budgets, sources, period, date.today())
+        pending = c.execute("""SELECT count(*) AS count FROM purchase_intake
+            WHERE academic_year=%s AND confirmed_purchase_id IS NULL
+            AND (%s::text IS NULL OR program_code=%s)""", (year, program, program)).fetchone()["count"]
+        return analyze(spending, budgets, sources, period, date.today()) | {"pending_purchases": pending}
+
+class AssistantQuestion(BaseModel):
+    year: str
+    program: ProgramCode | None = None
+    question: str = Field(default="", max_length=300)
+    topic: Topic | None = None
+
+@router.post("/assistant/ask")
+def ask_assistant(request: AssistantQuestion):
+    validate_year_label(request.year)
+    question = request.question.strip()
+    if bool(question) == bool(request.topic):
+        bad("Enter a question or select a topic")
+    if question:
+        for start, suffix in re.findall(r"\b(20\d{2})[-–](\d{4}|\d{2})\b", question):
+            year = start + "-" + (start[:2] + suffix if len(suffix) == 2 else suffix)
+            if year != request.year:
+                return {"status": "clarify", "message": "Select the academic year named in your question."}
+        if set(re.findall(r"\b20\d{2}\b", question)) - set(request.year.split("-")):
+            return {"status": "clarify", "message": "Select the academic year named in your question."}
+        if re.search(r"\b(last|next) (academic |financial )?year\b|\b(last|this|next) semester\b", question, re.I):
+            return {"status": "clarify", "message": "Use Reports to select a different year or semester."}
+    topic = request.topic or MODEL.predict(question)
+    if topic is None:
+        return {"status": "clarify", "message": "I couldn’t match that question to a ledger topic. Choose a topic below."}
+    catalog = programs()
+    names = {program["code"]: program["name"] for program in catalog}
+    program = request.program
+    matches = mentioned_programs(question, catalog)
+    if len(matches) > 1 or (matches and program and program != matches[0]):
+        return {"status": "clarify", "message": "Select the program you want to ask about, or ask a single-program question."}
+    if matches:
+        program = matches[0]
+    if program and program not in names:
+        bad("Unknown program")
+    ledger = financial_insights(request.year, program)
+    title, facts, source = answer(topic, ledger, program, names)
+    return {
+        "status": "answered", "topic": topic, "title": title, "facts": facts, "source": source,
+        "year": request.year, "program": names[program] if program else None,
+        "pending_purchases": ledger["pending_purchases"],
+    }
 
 @router.get("/reports/spending.xlsx")
 def spending_export(year: str = "2026-2027", start: date | None = None, end: date | None = None, program: str | None = None, supplier: str | None = None, funding_id: int | None = None, purchase_type: str | None = None):

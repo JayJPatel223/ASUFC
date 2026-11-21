@@ -15,6 +15,7 @@ function busy(pending) {
 
 function showError(message) {
   feedback.textContent = message;
+  selectedLabel.textContent = selectedBackup || 'No backup selected';
   busy(false);
 }
 

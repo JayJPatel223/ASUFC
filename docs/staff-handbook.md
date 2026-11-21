@@ -27,6 +27,8 @@ In **History**, choose the purchase in **Purchase receipts** and attach a PDF, J
 
 Choose the academic year before opening a report. In **Reports**, select a semester or enter your own date range. Use **Financial insights** for monthly cash and purchasing credit totals, program budget use, pending funding and expiry alerts. In **Reconciliation**, run the internal ledger checks and download the balance workbook. Compare bank and supplier statements separately.
 
+In **Assistant**, ask a short finance question or choose a topic. Check the academic year and program shown with the answer. Use the link beneath the answer to review the ledger screen that supports it.
+
 ## 5. Back up and recover
 
 1. Go to **Account → Encrypted ledger backup**. Enter and confirm a backup passphrase of at least 16 characters. Use a passphrase separate from the staff password.

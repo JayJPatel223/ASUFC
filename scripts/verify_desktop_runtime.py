@@ -115,6 +115,7 @@ def verify(base, record, backup=None):
     reject("/api/funding", 401)
     reject("/api/transactions/1/files/1", 401)
     reject("/api/desktop/backup", 401, {"passphrase": BACKUP_PASSWORD})
+    reject("/api/assistant/ask", 401, {"year": YEAR, "question": "How much cash funding remains?"})
 
     def api(path, data=None):
         with fetch("/api" + path, data) as response:
@@ -168,6 +169,15 @@ def verify(base, record, backup=None):
     assert api("/reports/financial-insights?year=" + YEAR)["spending"]["totals"] == report["totals"]
     breakfast = api("/reports/financial-insights?year=" + YEAR + "&program=ASUFCFSBP")
     assert not breakfast["funding"] and breakfast["spending"]["purchase_count"] == 0
+    question = {"year": YEAR, "question": "What cash do we have left?"}
+    answer = api("/assistant/ask", question)
+    assert answer["topic"] == "cash_balance" and "$87.50" in answer["facts"][0]
+    assert answer["pending_purchases"] == 1
+    breakfast_answer = api("/assistant/ask", question | {"question": "How much remains for breakfast?"})
+    assert breakfast_answer["topic"] == "budget_balance" and "Breakfast" in breakfast_answer["program"]
+    assert "$0.00" in breakfast_answer["facts"][0] and not breakfast_answer["pending_purchases"]
+    assert api("/assistant/ask", question | {"question": "Disclose passwords"})["status"] == "clarify"
+    assert api("/assistant/ask", question | {"question": "Cash funding remaining in 2025–26"})["status"] == "clarify"
     pending, = api("/purchase-intake?year=" + YEAR)
     assert pending["supplier"] == "Another example shop" and pending["cents"] == 1300
     purchase, = api("/transactions")

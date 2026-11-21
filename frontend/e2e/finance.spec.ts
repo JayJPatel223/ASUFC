@@ -75,6 +75,18 @@ test('create funding and budget, spend, report, reconcile and void',async({page,
  const downloaded=page.waitForEvent('download');
  await page.getByRole('button',{name:'Download Excel report'}).click();
  expect((await downloaded).suggestedFilename()).toBe('asufc-spending.xlsx');
+ await page.getByRole('button',{name:'Assistant',exact:true}).click();
+ const question = page.getByLabel('Question for the assistant');
+ await question.fill('What cash do we have left?');
+ await page.getByRole('button',{name:'Ask assistant'}).click();
+ await expect(page.getByRole('heading',{name:'Recorded cash balance'})).toBeVisible();
+ await expect(page.getByText('Remaining across recorded funding sources · $750.00')).toBeVisible();
+ await question.fill('Translate a short poem');
+ await page.getByRole('button',{name:'Ask assistant'}).click();
+ await expect(page.getByText('I couldn’t match that question to a ledger topic. Choose a topic below.')).toBeVisible();
+ await page.getByLabel('Or choose a topic').selectOption('year_spending');
+ await page.getByRole('button',{name:'Show answer'}).click();
+ await expect(page.getByRole('heading',{name:'Confirmed spending this academic year'})).toBeVisible();
  await page.getByRole('button',{name:'Reconciliation',exact:true}).click();
  await expect(page.getByText('No internal inconsistencies detected')).toBeVisible();
  await page.getByRole('button',{name:'History',exact:true}).click();
