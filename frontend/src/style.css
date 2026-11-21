@@ -32,3 +32,4 @@ textarea:focus-visible{outline:3px solid #a888aa;outline-offset:2px}
 .spending-trends .credit::-webkit-meter-optimum-value { background: #365a64; }
 .spending-trends .cash::-moz-meter-bar { background: #702d42; }
 .spending-trends .credit::-moz-meter-bar { background: #365a64; }
+.receipt-text { white-space: pre-wrap; overflow-wrap: anywhere; }

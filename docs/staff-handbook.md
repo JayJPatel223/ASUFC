@@ -21,6 +21,8 @@ The starter file uses the tracker’s receipt statuses and the provided class an
 
 Enter the purchase date and final charge in **Transactions**. Choose the program and funding budget. Use **Add allocation** to split a purchase. Check the amount shown as unassigned before confirming. **Suggest allocations** uses the entered program, purchase type and supplier to find eligible budget lines. Review every suggestion before saving.
 
+On the desktop app, open **Read a receipt photo** to get suggestions from a JPEG or PNG. Check the values, edit them if needed, and click **Copy reviewed values to purchase**. The form still requires your review and confirmation.
+
 In **History**, choose the purchase in **Purchase receipts** and attach a PDF, JPEG or PNG up to 5 MB. Use **Receipt to replace** and record a reason when uploading a replacement. The previous file remains available in history. For a wrong transaction, use **Correct a transaction** to record a linked replacement, or **Confirm void** to reverse the spending with a reason.
 
 ## 4. Report and reconcile

@@ -9,7 +9,7 @@ The Acadia Students’ Union Food Cupboard needed to track several streams of re
 | Funding | Record expected and received amounts, source restrictions, expiry and carry-forward decisions. Keep cash and credits independent. | Funding, carry-forward and reconciliation integration tests |
 | Budgets | Create programs and allocate several sources across eligible budgets. Enforce the source and program limits. | Budget, purchase-concurrency and eligibility integration tests |
 | Purchases | Review pending historical purchases, assign verified allocations, identify likely duplicates, correct or void with an audit trail. | Application integration tests and packaged-runtime starter and purchase checks |
-| Receipts | Attach and download private PDF, JPEG and PNG files. Identify byte-for-byte duplicates and link replacements. | Packaged-runtime authorization, invalid file, duplicate, history and recovery checks |
+| Receipts | Attach and download private PDF, JPEG and PNG files. Identify byte-for-byte duplicates and link replacements. Review purchase suggestions from photos read on the desktop. | Packaged-runtime authorization, history and recovery checks, plus desktop OCR and field-copy checks |
 | Reporting | Filter confirmed spending by year, semester, custom date range and ledger dimensions. Export workbooks and compare internal balances. | Report and Excel tests, staff browser flow and packaged-runtime reconciliation |
 | Analysis | Show deterministic, year-scoped spending, prior-month totals, budget use, age of funding and cautious spending estimates. | Packaged-runtime amount and program isolation check, forecast unit tests |
 | Recovery | Export an encrypted snapshot and restore it into a fresh local ledger. | Packaged-runtime checks for restart, wrong passphrase, truncation, restore and receipt persistence |
@@ -90,4 +90,4 @@ flowchart LR
   Ledger --> Answer[Calculated facts and source screen]
 ```
 
-External model access remains subject to institutional approval. A generative model or receipt extraction workflow requires separate evaluation and testing.
+The receipt-photo reader runs Tesseract's English optical character recognition model in a local worker. It proposes purchase fields from JPEG and PNG photos. Staff review and copy fields into the purchase form before using its normal confirmation workflow. PDF attachments are stored and downloaded through the receipt history. The Pages demo omits the receipt model. External model access remains subject to institutional approval, and a generative model requires separate evaluation and testing.

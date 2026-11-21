@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import insertFictionalReceipt from './fictional-receipt.cjs';
 
 const desktop = path.resolve(fileURLToPath(new URL('../../desktop/', import.meta.url)));
 const requireDesktop = createRequire(path.join(desktop, 'package.json'));
@@ -65,6 +66,16 @@ async function verifyPlaywrightWindow() {
     await panel.getByLabel('Confirmed received (CAD)').fill('100');
     await panel.getByRole('button', { name: 'Save funding' }).click();
     await expect(page.getByText('Record saved successfully.')).toBeVisible();
+    await page.getByRole('button', { name: 'Transactions', exact: true }).click();
+    await page.getByText('Read a receipt photo', {exact: true}).click();
+    await expect(page.getByLabel('Receipt photo')).toBeVisible();
+    await page.evaluate(insertFictionalReceipt);
+    await page.getByRole('button', {name: 'Read receipt photo'}).click();
+    await expect(page.getByLabel('Suggested receipt total')).toHaveValue('12.50', {timeout: 40_000});
+    await expect(page.getByLabel('Suggested receipt date')).toHaveValue('2026-11-04');
+    await expect(page.getByLabel('Purchase total (CAD)')).toHaveValue('');
+    await page.getByRole('button', {name: 'Copy reviewed values to purchase'}).click();
+    await expect(page.getByLabel('Purchase total (CAD)')).toHaveValue('12.50');
     await page.getByRole('button', { name: 'Sign out' }).click();
     await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
   } finally {
@@ -92,4 +103,4 @@ try {
 } finally {
   await rm(state, { recursive: true, force: true, maxRetries: 12, retryDelay: 250 });
 }
-console.log('Verified the desktop window, first-run setup, sign-in, and saved records after reopening.');
+console.log('Verified desktop setup, sign-in, local receipt-photo reading and saved records after reopening.');

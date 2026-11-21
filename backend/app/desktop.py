@@ -240,8 +240,8 @@ def serve_staff(frontend_dir):
         async def security_headers(request, call_next):
             response = await call_next(request)
             response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+                "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; "
                 "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
             )
             response.headers["X-Content-Type-Options"] = "nosniff"

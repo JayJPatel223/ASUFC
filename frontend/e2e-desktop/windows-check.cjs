@@ -3,6 +3,7 @@ const { app } = require('electron');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { setTimeout: wait } = require('node:timers/promises');
+const insertFictionalReceipt = require('./fictional-receipt.cjs');
 
 const windowCreated = once(app, 'browser-window-created');
 require('../../desktop/main.cjs');
@@ -52,6 +53,16 @@ async function check(window) {
       name: 'Fictional window grant', award: '120', received: '100',
     });
     await waitFor('document.body.innerText.includes("Record saved successfully.")', 'the funding confirmation');
+    await evaluate(button('Transactions') + '.click()');
+    const scanDetails = 'Array.from(document.querySelectorAll("summary")).find(node => node.textContent === "Read a receipt photo")';
+    await waitFor('!!(' + scanDetails + ')', 'the receipt scanner');
+    await evaluate(scanDetails + '.click()');
+    await waitFor('!!document.querySelector(\'input[accept="image/png,image/jpeg"]\')', 'the receipt photo field');
+    await evaluate('(' + insertFictionalReceipt.toString() + ')()');
+    await evaluate(button('Read receipt photo') + '.click()');
+    await waitFor('Array.from(document.querySelectorAll("label")).some(node => node.textContent === "Suggested receipt total" && node.querySelector("input").value === "12.50")', 'the recognized receipt total');
+    await evaluate(button('Copy reviewed values to purchase') + '.click()');
+    await waitFor('Array.from(document.querySelectorAll("label")).some(node => node.textContent === "Purchase total (CAD)" && node.querySelector("input").value === "12.50")', 'the reviewed purchase total');
     await evaluate(button('Sign out') + '.click()');
     await waitFor('!!document.querySelector("input[name=user]")', 'the sign-in page after logout');
   } else {
