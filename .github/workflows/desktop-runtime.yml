@@ -12,6 +12,11 @@ on:
       - 'scripts/verify_desktop_install.py'
       - 'scripts/verify_desktop_runtime.py'
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign Windows and macOS packages with institutional credentials
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,6 +27,7 @@ concurrency:
 
 jobs:
   desktop-runtime:
+    if: ${{ !inputs.sign || github.ref == 'refs/heads/main' }}
     name: Runtime on ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -72,16 +78,60 @@ jobs:
           else
             node frontend/e2e-desktop/verify.mjs
           fi
-      - name: Package desktop candidate
-        working-directory: desktop
+      - name: Prepare macOS notarization key
+        if: ${{ inputs.sign && runner.os == 'macOS' }}
+        shell: bash
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run package
+          NOTARIZATION_KEY_BASE64: ${{ secrets.DESKTOP_APPLE_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$NOTARIZATION_KEY_BASE64"
+          umask 077
+          key="$RUNNER_TEMP/asufc-notarization.p8"
+          printf '%s' "$NOTARIZATION_KEY_BASE64" | base64 -D > "$key"
+          printf 'APPLE_API_KEY=%s\n' "$key" >> "$GITHUB_ENV"
+      - name: Package desktop app
+        working-directory: desktop
+        shell: bash
+        env:
+          SIGN_DESKTOP: ${{ inputs.sign && runner.os != 'Linux' && 'true' || 'false' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ inputs.sign && runner.os != 'Linux' && 'true' || 'false' }}
+          CSC_LINK: ${{ inputs.sign && runner.os == 'macOS' && secrets.DESKTOP_MAC_CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.sign && runner.os == 'macOS' && secrets.DESKTOP_MAC_CSC_KEY_PASSWORD || '' }}
+          APPLE_API_KEY_ID: ${{ inputs.sign && runner.os == 'macOS' && secrets.DESKTOP_APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ inputs.sign && runner.os == 'macOS' && secrets.DESKTOP_APPLE_API_ISSUER || '' }}
+          WIN_CSC_LINK: ${{ inputs.sign && runner.os == 'Windows' && secrets.DESKTOP_WIN_CSC_LINK || '' }}
+          WIN_CSC_KEY_PASSWORD: ${{ inputs.sign && runner.os == 'Windows' && secrets.DESKTOP_WIN_CSC_KEY_PASSWORD || '' }}
+        run: |
+          set -euo pipefail
+          if [ "$SIGN_DESKTOP" = true ]; then
+            if [ "$RUNNER_OS" = macOS ]; then
+              test -n "$CSC_LINK" && test -n "$APPLE_API_KEY_ID" && test -n "$APPLE_API_ISSUER"
+            else
+              test -n "$WIN_CSC_LINK"
+            fi
+            npm run package -- --config.forceCodeSigning=true
+          else
+            npm run package
+          fi
       - name: Verify the runtime from the installed or extracted package
-        run: python scripts/verify_desktop_install.py
+        shell: bash
+        env:
+          VERIFY_DESKTOP_SIGNATURE: ${{ inputs.sign && runner.os != 'Linux' && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Linux ]; then
+            sudo unshare --net bash -eu -c 'ip link set lo up; exec runuser -u "$1" -- "$2" scripts/verify_desktop_install.py' _ "$USER" "$(command -v python)"
+          else
+            python scripts/verify_desktop_install.py
+          fi
+      - name: Remove temporary notarization key
+        if: ${{ always() && inputs.sign && runner.os == 'macOS' }}
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/asufc-notarization.p8"
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-candidate-${{ matrix.os }}
+          name: desktop-${{ inputs.sign && runner.os != 'Linux' && 'signed' || 'candidate' }}-${{ matrix.os }}
           if-no-files-found: error
           path: |
             desktop/release/*.exe

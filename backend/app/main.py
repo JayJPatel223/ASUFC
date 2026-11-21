@@ -270,6 +270,25 @@ def confirm_funding(funding_id: int, r: Receipt):
         audit(c,"receipt_confirmed","funding",funding_id,{"before":f["received_cents"],"after":updated["received_cents"]})
         return funding_rule_fields(updated | funding_eligibility(c, funding_id))
 
+class AwardChange(BaseModel):
+    expected_cents: int = Field(ge=0, le=10**12)
+    reason: str = Field(min_length=1, max_length=1000)
+
+@router.patch("/funding/{funding_id}/award")
+def change_award(funding_id: int, change: AwardChange):
+    reason = change.reason.strip()
+    if not reason: bad("Reason required")
+    with db() as c:
+        previous = c.execute("SELECT * FROM funding WHERE id=%s FOR UPDATE", (funding_id,)).fetchone()
+        if not previous: raise HTTPException(404, "Unknown funding")
+        if change.expected_cents < previous["received_cents"]: bad("Award cannot be less than confirmed receipts")
+        row = c.execute("UPDATE funding SET expected_cents=%s WHERE id=%s RETURNING *",
+                        (change.expected_cents, funding_id)).fetchone()
+        audit(c, "award_changed", "funding", funding_id, {
+            "before": previous["expected_cents"], "after": change.expected_cents, "reason": reason,
+        })
+        return funding_rule_fields(row | funding_eligibility(c, funding_id))
+
 @router.get("/funding")
 def funding():
     with db() as c:

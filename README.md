@@ -16,7 +16,7 @@ See docs/architecture.md and PROGRESS.md for limitations. No production readines
 
 ## Offline desktop edition
 
-See the [offline desktop development guide](docs/offline-desktop.md) for the single-computer design and candidate build checks.
+See the [staff handbook](docs/staff-handbook.md) for everyday use, the [offline desktop guide](docs/offline-desktop.md) for building, signing and testing installers, and the [project handover](docs/university-handover.md) for requirements, diagrams and verification.
 
 ## Private staff workspace
 

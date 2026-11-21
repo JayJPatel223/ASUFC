@@ -50,6 +50,8 @@ def load_database_password(state_dir, database_dir):
 def postgres_tool(bin_dir, name, *arguments):
     binary = bin_dir / (name + (".exe" if os.name == "nt" else ""))
     environment = os.environ.copy()
+    if os.name == "nt":
+        environment["PATH"] = str(bin_dir) + os.pathsep + environment.get("PATH", "")
     if sys.platform.startswith("linux") and getattr(sys, "frozen", False):
         original_path = environment.pop("LD_LIBRARY_PATH_ORIG", None)
         if original_path is None:

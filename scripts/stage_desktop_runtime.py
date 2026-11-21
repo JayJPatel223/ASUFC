@@ -20,6 +20,27 @@ POSTGRES_BUILDS = {
     ("win32", "amd64"): "windows-x64",
 }
 
+def stage_windows_crt(bin_dir):
+    """Ship Microsoft's redistributable app-local runtime for clean Windows PCs."""
+    program_files = Path(os.environ["ProgramFiles(x86)"])
+    vswhere = program_files / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+    installation = subprocess.check_output([
+        str(vswhere), "-latest", "-products", "*",
+        "-requires", "Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
+        "-property", "installationPath",
+    ], text=True).strip()
+    if not installation:
+        raise SystemExit("The Visual Studio C++ redistributable build component is required for Windows packaging")
+    candidates = sorted(
+        (Path(installation) / "VC" / "Redist" / "MSVC").glob("*/x64/Microsoft.VC*.CRT"),
+        key=lambda path: tuple(map(int, path.parents[1].name.split("."))),
+        reverse=True,
+    )
+    if not candidates or not (candidates[0] / "msvcp140.dll").is_file():
+        raise SystemExit("Could not locate the Microsoft x64 app-local runtime")
+    for library in candidates[0].glob("*.dll"):
+        shutil.copy2(library, bin_dir / library.name)
+
 
 def stage_postgres(directory):
     platform_key = sys.platform, platform.machine().lower()
@@ -41,6 +62,8 @@ def stage_postgres(directory):
         subprocess.run(["node", str(extracted / "scripts" / "hydrate-symlinks.js")], check=True)
         shutil.copytree(extracted / "native", directory, symlinks=True)
         shutil.copy2(extracted / "LICENSE.md", directory / "LICENSE.md")
+        if sys.platform == "win32":
+            stage_windows_crt(directory / "bin")
 
 
 def main():
