@@ -36,7 +36,7 @@ async function check(window) {
   };
   const button = label => `Array.from(document.querySelectorAll('button')).find(node => node.textContent.trim() === ${JSON.stringify(label)})`;
 
-  await waitFor('location.hostname === "127.0.0.1" && document.getElementById("cash-overview")', 'the staff overview');
+  await waitFor('location.hostname === "127.0.0.1" && !!document.getElementById("cash-overview")', 'the staff overview');
   assert.equal(await evaluate('!!document.querySelector("input[name=user]")'), false);
   assert.equal(await evaluate('fetch("/api/funding", {credentials:"omit"}).then(response => response.status)'), 401);
 
