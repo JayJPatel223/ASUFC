@@ -8,6 +8,8 @@ The staff application implements funding receipts, separate cash and credit acco
 
 The [public demonstration](https://jayjpatel223.github.io/ASUFC/) uses a separate Vite build and an in-memory mock transport. Reloading resets the fictional records. The demo supports core spending workflows. Server features such as Excel processing, credential management and actual grants are handled by the staff application.
 
-Institutional access, funding rules, formal reporting cutoffs, production hosting and encryption key custody require confirmed stakeholder decisions. A funding source can specify several eligible programs, suppliers and purchase types. Rules apply to the labels and program codes on the purchase, so item-level grant terms still require staff review. Secure transaction receipt files and an AI provider are future work. Keep stakeholder records private and use fictional fixtures in development.
+The single-computer desktop build bundles its own staff interface, API and database. It adds private receipt files, encrypted fresh-profile recovery and reviewed starter-file intake. Pending historical charges stay out of confirmed spending until staff assign them to eligible budgets.
+
+Institutional access, formal reporting cutoffs, signing, retention and backup custody require confirmed stakeholder decisions. A source can specify several eligible programs, suppliers and purchase types. Rules apply to those fields, so staff still review item-level terms. Keep stakeholder records private and use fictional fixtures in development.
 
 See [architecture](docs/architecture.md), [recovery](docs/recovery.md), [security review](docs/security-review.md), [roadmap](ROADMAP.md) and [progress](PROGRESS.md).

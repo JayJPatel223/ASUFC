@@ -8,6 +8,8 @@ A source can list multiple eligible values per category. Each nonempty list must
 
 Academic years isolate funding and budgets. Semester presets and report date filters support reporting within the selected financial year. Corrections link a replacement to the original, and voids preserve history while restoring capacity. Excel import uses the same purchase validation. Reconciliation compares internal records, and bank settlement is a separate staff process.
 
+The desktop launcher serves the production staff interface and PostgreSQL on loopback. Starter files are applied atomically to a new ledger. A pending purchase becomes confirmed only when the existing allocation checks pass in the same transaction that links it back to its intake record. Private receipt binaries and metadata live with the ledger. The desktop backup encrypts a snapshot of these records and authenticates each part before restoring it into a fresh local database.
+
 The eligibility schema is additive. A database backup includes the effective rules and their audit history. If reverting the app from a version with list-based rules, pause writes and verify that the restored version enforces the current rules before reopening staff access. Older servers only interpret the legacy fields.
 
 ```mermaid
