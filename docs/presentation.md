@@ -24,7 +24,13 @@
 - Restore it into a fresh profile and sign in with the original staff password.
 - Compare the restored purchase, receipt history, balances and report.
 
-## 5. Verification and handover
+## 5. Use the offline assistant
+
+- Ask how much cash remains or which funding is expected.
+- Check the academic year and program shown with the answer.
+- Read a fictional receipt photo, compare its suggestions with the original, and copy only the reviewed values.
+
+## 6. Verification and handover
 
 - Show the application checks and platform build matrix for the handover commit.
 - Identify the designated computer, backup custodian and person responsible for confirming financial cutoffs.

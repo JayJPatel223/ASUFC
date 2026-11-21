@@ -10,6 +10,8 @@ The [public demonstration](https://jayjpatel223.github.io/ASUFC/) uses a separat
 
 The single-computer desktop build bundles its own staff interface, API and database. It adds private receipt files, encrypted fresh-profile recovery and reviewed starter-file intake. Pending historical charges stay out of confirmed spending until staff assign them to eligible budgets.
 
+The staff assistant classifies common questions locally and reads verified ledger totals through approved queries. Desktop receipt-photo reading runs an English OCR model locally and copies suggestions to an unsaved form only after staff review.
+
 Institutional access, formal reporting cutoffs, signing, retention and backup custody require confirmed stakeholder decisions. A source can specify several eligible programs, suppliers and purchase types. Rules apply to those fields, so staff still review item-level terms. Keep stakeholder records private and use fictional fixtures in development.
 
 See [architecture](docs/architecture.md), [recovery](docs/recovery.md), [security review](docs/security-review.md), [roadmap](ROADMAP.md) and [progress](PROGRESS.md).
