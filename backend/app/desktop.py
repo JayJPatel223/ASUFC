@@ -1,6 +1,7 @@
 """Run the staff application and its database on the same offline computer."""
 
 import argparse
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -255,7 +256,7 @@ def serve_staff(frontend_dir):
 
         server = DesktopServer(uvicorn.Config(
             desktop_app, http="h11", ws="none", loop="asyncio",
-            log_config=None, access_log=False, proxy_headers=False,
+            log_config=None, access_log=False, proxy_headers=False, timeout_graceful_shutdown=15,
         ))
 
         def stop_when_launcher_exits():
@@ -263,7 +264,12 @@ def serve_staff(frontend_dir):
             server.should_exit = True
 
         threading.Thread(target=stop_when_launcher_exits, daemon=True).start()
-        server.run(sockets=[listener])
+        if os.name == "nt":
+            # Windows' proactor transport can leave a reset HTTP connection
+            # attached during shutdown. This small local server uses TCP only.
+            asyncio.run(server.serve(sockets=[listener]), loop_factory=asyncio.SelectorEventLoop)
+        else:
+            server.run(sockets=[listener])
         if not server.started:
             raise RuntimeError("The staff application did not start")
 

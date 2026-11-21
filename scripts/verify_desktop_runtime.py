@@ -92,7 +92,7 @@ def verify(base, record, backup=None):
                 html = page.read().decode("utf-8")
                 assert page.headers["Content-Security-Policy"]
             break
-        except URLError:
+        except (URLError, ConnectionResetError):
             if attempt == 29:
                 raise
             time.sleep(0.25)
@@ -108,7 +108,9 @@ def verify(base, record, backup=None):
             with fetch(path, data):
                 raise AssertionError(f"{path} did not return {code}")
         except HTTPError as error:
-            assert error.code == code, (error.code, error.read())
+            with error:
+                body = error.read()
+            assert error.code == code, (error.code, body)
 
     reject("/api/funding", 401)
     reject("/api/transactions/1/files/1", 401)
@@ -196,7 +198,7 @@ def main():
     command = args.command[1:] if args.command and args.command[0] == "--" else args.command
     if not command:
         parser.error("Provide the desktop runtime command after --")
-    with TemporaryDirectory(prefix="asufc-desktop-") as path:
+    with TemporaryDirectory(prefix="asufc-desktop-", ignore_cleanup_errors=True) as path:
         state = Path(path)
         backup = state / "fictional.asufcbak"
         with launch(command, state, needs_setup=True) as base:

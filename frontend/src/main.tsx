@@ -249,7 +249,7 @@ function TransactionsPage({data, year, save, busy, api}: {data: Data; year: stri
     {error && <p role="alert" className="error">{error} <button onClick={() => setVersion(value => value + 1)}>Retry</button></p>}
     {pending.length > 0 && <Panel title="Pending purchases">
       <p>{pending.length} awaiting review · {money(pending.reduce((sum, row) => sum + row.cents, 0))} recorded in the source file</p>
-      <label>Pending purchase<select value={selectedId} onChange={event => setSelected(event.target.value)} disabled={busy}>
+      <label>Pending purchase<select aria-label="Pending purchase" value={selectedId} onChange={event => setSelected(event.target.value)} disabled={busy}>
         <option value="">Select a purchase to review</option>
         {pending.map(row => <option key={row.id} value={row.id}>
           {row.purchase_date} · {row.supplier} · {money(row.cents)}{row.verify_charge ? ' · Verify final charge' : ''}

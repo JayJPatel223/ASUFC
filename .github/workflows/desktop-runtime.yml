@@ -106,12 +106,16 @@ jobs:
           set -euo pipefail
           if [ "$SIGN_DESKTOP" = true ]; then
             if [ "$RUNNER_OS" = macOS ]; then
-              test -n "$CSC_LINK" && test -n "$APPLE_API_KEY_ID" && test -n "$APPLE_API_ISSUER"
+              if [ -z "$CSC_LINK" ] || [ -z "$APPLE_API_KEY_ID" ] || [ -z "$APPLE_API_ISSUER" ]; then
+                echo "Configure the institutional macOS signing and notarization credentials." >&2
+                exit 1
+              fi
             else
               test -n "$WIN_CSC_LINK"
             fi
             npm run package -- --config.forceCodeSigning=true
           else
+            unset CSC_LINK CSC_KEY_PASSWORD WIN_CSC_LINK WIN_CSC_KEY_PASSWORD
             npm run package
           fi
       - name: Verify the runtime from the installed or extracted package
