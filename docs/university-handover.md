@@ -12,7 +12,7 @@ The Acadia Students’ Union Food Cupboard needed to track several streams of re
 | Receipts | Attach and download private PDF, JPEG and PNG files. Identify byte-for-byte duplicates and link replacements. Review purchase suggestions from photos read on the desktop. | Packaged-runtime authorization, history and recovery checks, plus desktop OCR and field-copy checks |
 | Reporting | Filter confirmed spending by year, semester, custom date range and ledger dimensions. Export workbooks and compare internal balances. | Report and Excel tests, staff browser flow and packaged-runtime reconciliation |
 | Analysis | Show deterministic, year-scoped spending, prior-month totals, budget use, age of funding and cautious spending estimates. | Packaged-runtime amount and program isolation check, forecast unit tests |
-| Recovery | Export an encrypted snapshot and restore it into a fresh local ledger. | Packaged-runtime checks for restart, wrong passphrase, truncation, restore and receipt persistence |
+| Recovery | Export an encrypted snapshot and restore it from Account into an empty local ledger. | Packaged-runtime checks for restart, wrong passphrase, truncation, restore and receipt persistence |
 | Distribution | Bundle the interface, API and database for Windows x64, macOS Intel and Apple Silicon, and Linux x64. | Offline staff runtime matrix and installed or extracted artifact checks |
 
 ## Use case flows
@@ -21,7 +21,7 @@ The Acadia Students’ Union Food Cupboard needed to track several streams of re
 
 **Change a funding decision.** Staff records the reason for editing the award, expiry, eligibility or carry-forward permission. The API validates the change against the source and its existing commitments. Pending amounts stay separate until staff confirm receipt.
 
-**Recover a ledger.** Staff selects an encrypted backup during first launch on a fresh profile, enters the passphrase and signs in using the saved staff account. The recovery transaction includes funding, academic dates, pending purchases, receipt history, recorded transactions and audit events.
+**Recover a ledger.** Staff opens Account on a fresh profile, chooses the encrypted backup and enters its passphrase. The recovery transaction includes funding, academic dates, pending purchases, receipt history, recorded transactions and audit events.
 
 ## Deployment and system design
 
@@ -65,7 +65,7 @@ sequenceDiagram
   App-->>Staff: Show amounts and limits
 ```
 
-The desktop runtime listens on loopback, uses a restricted renderer, and stores the ledger under the current operating-system user's application data. Backups use passphrase-derived scrypt keys and AES-GCM authentication. Backup and restore preserve data as a consistent snapshot without writing a plaintext archive. Receipt downloads require staff authorization, uploads are bounded, and replacements preserve the original attachment.
+The desktop runtime listens on loopback, uses a restricted renderer, and stores the ledger under the current operating-system user's application data. The launcher authorizes the desktop window with a session-only credential and opens directly to Overview. Backups use passphrase-derived scrypt keys and AES-GCM authentication. Backup and restore preserve data as a consistent snapshot without writing a plaintext archive. Receipt downloads require staff authorization, uploads are bounded, and replacements preserve the original attachment.
 
 ## Verification and maintenance
 
@@ -76,7 +76,7 @@ The desktop runtime listens on loopback, uses a restricted renderer, and stores 
 
 ## Handover decisions
 
-ASUFC owns the staff profile, password custody, backup destination and retention, official financial cutoffs, final grant evidence and item-level eligibility review. The ledger records funding decisions, while staff verify receipts and assign historical purchases. Signed installer distribution and a physically disconnected recovery drill require the designated hardware and publishing credentials.
+ASUFC owns the operating-system account for the designated computer, backup passphrase custody, backup destination and retention, official financial cutoffs, final grant evidence and item-level eligibility review. Staff verify receipts and assign historical purchases. Signed installer distribution and a physically disconnected recovery drill require the designated hardware and publishing credentials.
 
 The assistant uses a small offline text classifier trained on fictional example questions. It maps a question to an approved topic, validates the year and program, and calls the same deterministic calculation used by Financial insights. Staff can choose a supported topic directly when the model cannot match their wording. The model reads the question only. Ledger values are retrieved by the application to build the answer and remain on the computer. Forecasts remain unavailable when there are fewer than six consecutive complete months of recorded spending for the selected scope.
 

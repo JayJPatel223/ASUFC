@@ -1,6 +1,6 @@
 {
   "name": "asufc-finance-desktop",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "ASUFC Finance offline staff workspace",
   "author": "ASUFC Finance project",
   "private": true,
@@ -21,7 +21,7 @@
     "productName": "ASUFC Finance",
     "artifactName": "ASUFC-Finance-${version}-${os}-${arch}.${ext}",
     "directories": { "output": "release" },
-    "files": ["main.cjs", "preload.cjs", "setup.html", "setup.js", "setup.css"],
+    "files": ["main.cjs", "preload.cjs"],
     "extraResources": [{ "from": "runtime", "to": "runtime" }],
     "win": { "target": "nsis" },
     "mac": { "target": "dmg", "category": "public.app-category.finance" },

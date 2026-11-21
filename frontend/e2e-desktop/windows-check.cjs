@@ -7,7 +7,6 @@ const insertFictionalReceipt = require('./fictional-receipt.cjs');
 
 const windowCreated = once(app, 'browser-window-created');
 require('../../desktop/main.cjs');
-const password = 'fictional-app-window-test-only';
 const setup = process.env.ASUFC_DESKTOP_TEST_PHASE === 'setup';
 
 async function check(window) {
@@ -18,7 +17,7 @@ async function check(window) {
       try {
         if (await evaluate(expression)) return;
       } catch {
-        // React and the setup screen replace the window's document during navigation.
+        // The desktop replaces the startup document during navigation.
       }
       await wait(200);
     }
@@ -37,13 +36,9 @@ async function check(window) {
   };
   const button = label => `Array.from(document.querySelectorAll('button')).find(node => node.textContent.trim() === ${JSON.stringify(label)})`;
 
-  if (setup) {
-    await waitFor('location.protocol === "file:" && !!document.querySelector("input[name=confirmation]")', 'first-run setup');
-    await fillForm('document.querySelector("form")', { password: password, confirmation: password });
-  }
-  await waitFor('location.hostname === "127.0.0.1" && !!document.querySelector("input[name=user]")', 'the staff sign-in form');
-  await fillForm('document.querySelector("form")', { user: 'staff', password: password });
-  await waitFor('document.querySelector("h1")?.textContent === "Overview"', 'the staff overview');
+  await waitFor('location.hostname === "127.0.0.1" && document.getElementById("cash-overview")', 'the staff overview');
+  assert.equal(await evaluate('!!document.querySelector("input[name=user]")'), false);
+  assert.equal(await evaluate('fetch("/api/funding", {credentials:"omit"}).then(response => response.status)'), 401);
 
   if (setup) {
     await evaluate(button('Funding & grants') + '.click()');
@@ -63,8 +58,10 @@ async function check(window) {
     await waitFor('Array.from(document.querySelectorAll("label")).some(node => node.textContent === "Suggested receipt total" && node.querySelector("input").value === "12.50")', 'the recognized receipt total');
     await evaluate(button('Copy reviewed values to purchase') + '.click()');
     await waitFor('Array.from(document.querySelectorAll("label")).some(node => node.textContent === "Purchase total (CAD)" && node.querySelector("input").value === "12.50")', 'the reviewed purchase total');
-    await evaluate(button('Sign out') + '.click()');
-    await waitFor('!!document.querySelector("input[name=user]")', 'the sign-in page after logout');
+    await evaluate(button('Account') + '.click()');
+    await waitFor('!!' + button('Save encrypted backup'), 'the encrypted backup controls');
+    await waitFor('!!' + button('Restore backup'), 'the backup recovery controls');
+    assert.equal(await evaluate('!!' + button('Change password')), false);
   } else {
     await waitFor('document.getElementById("cash-overview")?.parentElement.innerText.includes("100.00")', 'the saved cash balance');
     await waitFor('Array.from(document.querySelectorAll("tr")).some(row => row.innerText.includes("Fictional window grant"))', 'the saved funding record');
@@ -72,7 +69,7 @@ async function check(window) {
 }
 
 windowCreated.then(([, window]) => check(window)).then(() => {
-  console.log(setup ? 'Verified setup, sign-in and a funding write in the Windows window.' : 'Verified the saved funding record after reopening the Windows window.');
+  console.log(setup ? 'Verified direct launch and a funding write in the Windows window.' : 'Verified the saved funding record after reopening the Windows window.');
   app.quit();
 }).catch(error => {
   console.error(error);
